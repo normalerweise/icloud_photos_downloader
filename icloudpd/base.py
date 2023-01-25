@@ -354,21 +354,8 @@ class ICloudPhotosDownloader:
         self.icloud = icloud
         self.logger = logger
 
-    def get_albums_or_die(self):
-        # Default album is "All Photos", so this is the same as
-        # calling `icloud.photos.all`.
-        # After 6 or 7 runs within 1h Apple blocks the API for some time. In that
-        # case exit.
-        try:
-            return self.icloud.photos.albums
-        except PyiCloudAPIResponseError as err:
-            # For later: come up with a nicer message to the user. For now take the
-            # exception text
-            print(err)
-            sys.exit(1)
-
     def list_albums(self):
-        albums_dict = self.get_albums_or_die()
+        albums_dict = self.__get_albums_or_die()
         albums = albums_dict.values()  # pragma: no cover
         album_titles = [str(a) for a in albums]
         print(*album_titles, sep="\n")
@@ -378,7 +365,7 @@ class ICloudPhotosDownloader:
                                 folder_structure, force_size, set_exif_datetime,
                                 skip_live_photos, live_photo_size, delete_after_download):
 
-        album = self.get_albums_or_die()[album_name]
+        album = self.__get_albums_or_die()[album_name]
 
         directory = os.path.normpath(directory)
 
@@ -387,7 +374,7 @@ class ICloudPhotosDownloader:
             "" if skip_videos else " and videos",
             album_name)
 
-        album.exception_handler = self.build_photos_exception_handler()
+        album.exception_handler = self.__build_photos_exception_handler()
 
         photos_count = len(album)
 
@@ -435,11 +422,18 @@ class ICloudPhotosDownloader:
 
         consecutive_files_found = Counter(0)
 
-        should_break = self.build_should_break(until_found)
-        download_photo = self.build_download_photo(
-            skip_videos=skip_videos, directory=directory, folder_structure=folder_structure, size=size, force_size=force_size, only_print_filenames=only_print_filenames,
-            set_exif_datetime=set_exif_datetime, skip_live_photos=skip_live_photos, live_photo_size=live_photo_size)
-        delete_photo = self.build_delete_photo()
+        should_break = self.__build_should_break(until_found)
+        download_photo = self.__build_download_photo(
+            skip_videos=skip_videos,
+            directory=directory,
+            folder_structure=folder_structure,
+            size=size,
+            force_size=force_size,
+            only_print_filenames=only_print_filenames,
+            set_exif_datetime=set_exif_datetime,
+            skip_live_photos=skip_live_photos,
+            live_photo_size=live_photo_size)
+        delete_photo = self.__build_delete_photo()
 
         photos_iterator = iter(photos_enumerator)
         while True:
@@ -464,7 +458,7 @@ class ICloudPhotosDownloader:
         if self.auto_delete:
             autodelete_photos(self.icloud, folder_structure, directory)
 
-    def build_photos_exception_handler(self):
+    def __build_photos_exception_handler(self):
         def photos_exception_handler(ex, retries):
             """Handles session errors in the PhotoAlbum photos iterator"""
             if "Invalid global session" in str(ex):
@@ -484,13 +478,15 @@ class ICloudPhotosDownloader:
                 self.icloud.authenticate()
         return photos_exception_handler()
 
-    def build_should_break(until_found):
+    def __build_should_break(until_found):
         def should_break(counter):
             """Exit if until_found condition is reached"""
             return until_found is not None and counter.value() >= until_found
         return should_break
 
-    def build_download_photo(self, skip_videos, directory, folder_structure, size, force_size, only_print_filenames, set_exif_datetime, skip_live_photos, live_photo_size):
+    def __build_download_photo(
+            self, skip_videos, directory, folder_structure, size,
+            force_size, only_print_filenames, set_exif_datetime, skip_live_photos, live_photo_size):
         def download_photo(counter, photo):
             """internal function for actually downloading the photos"""
             if skip_videos and photo.item_type != "image":
@@ -672,7 +668,7 @@ class ICloudPhotosDownloader:
                             )
             return download_photo
 
-    def build_delete_photo(self):
+    def __build_delete_photo(self):
         def delete_photo(photo):
             """Delete a photo from the iCloud account."""
             self.logger.info("Deleting %s", photo.filename)
@@ -699,3 +695,16 @@ class ICloudPhotosDownloader:
                 url, data=post_data, headers={
                     "Content-type": "application/json"})
         return delete_photo
+
+    def __get_albums_or_die(self):
+        # Default album is "All Photos", so this is the same as
+        # calling `icloud.photos.all`.
+        # After 6 or 7 runs within 1h Apple blocks the API for some time. In that
+        # case exit.
+        try:
+            return self.icloud.photos.albums
+        except PyiCloudAPIResponseError as err:
+            # For later: come up with a nicer message to the user. For now take the
+            # exception text
+            print(err)
+            sys.exit(1)
