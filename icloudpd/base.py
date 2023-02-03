@@ -24,6 +24,7 @@ from icloudpd.email_notifications import send_2sa_notification
 from icloudpd.string_helpers import truncate_middle
 from icloudpd.autodelete import autodelete_photos
 from icloudpd.paths import local_download_path
+from icloudpd.paths import local_dowload_dir
 from icloudpd import exif_datetime
 # Must import the constants object so that we can mock values in tests.
 from icloudpd import constants
@@ -260,13 +261,15 @@ def main(
     if list_albums:
         photos_downloader.list_albums()
     else:
+        photos_directory = directory + '/_Photos'
         photos_downloader.download_and_save_album(
             album_name=album,
-            directory=directory,
+            directory=photos_directory,
             skip_videos=skip_videos,
             recent=recent,
             until_found=until_found,
-            size=size, only_print_filenames=only_print_filenames,
+            size=size, 
+            only_print_filenames=only_print_filenames,
             no_progress_bar=no_progress_bar,
             folder_structure=folder_structure,
             force_size=force_size,
@@ -274,6 +277,14 @@ def main(
             skip_live_photos=skip_live_photos,
             live_photo_size=live_photo_size,
             delete_after_download=delete_after_download)
+
+    if only_print_filenames:
+        sys.exit(0)
+
+    logger.info("All photos have been downloaded!")
+
+    if auto_delete:
+        autodelete_photos(icloud, folder_structure, directory)
 
 
 def setup_and_configure_logger(only_print_filenames, log_level):
@@ -365,7 +376,6 @@ class ICloudPhotosDownloader:
                                 folder_structure, force_size, set_exif_datetime,
                                 skip_live_photos, live_photo_size, delete_after_download):
 
-        album = self.__get_albums_or_die()[album_name]
 
         directory = os.path.normpath(directory)
 
@@ -373,6 +383,8 @@ class ICloudPhotosDownloader:
             "Looking up all photos%s from album %s...",
             "" if skip_videos else " and videos",
             album_name)
+
+        album = self.__get_albums_or_die()[album_name]
 
         album.exception_handler = self.__build_photos_exception_handler()
 
@@ -450,14 +462,6 @@ class ICloudPhotosDownloader:
             except StopIteration:
                 break
 
-        if only_print_filenames:
-            sys.exit(0)
-
-        self.logger.info("All photos have been downloaded!")
-
-        if self.auto_delete:
-            autodelete_photos(self.icloud, folder_structure, directory)
-
     def __build_photos_exception_handler(self):
         def photos_exception_handler(ex, retries):
             """Handles session errors in the PhotoAlbum photos iterator"""
@@ -476,9 +480,9 @@ class ICloudPhotosDownloader:
                     # there are some issues with the Apple servers
                     time.sleep(constants.WAIT_SECONDS * retries)
                 self.icloud.authenticate()
-        return photos_exception_handler()
+        return photos_exception_handler
 
-    def __build_should_break(until_found):
+    def __build_should_break(self, until_found):
         def should_break(counter):
             """Exit if until_found condition is reached"""
             return until_found is not None and counter.value() >= until_found
@@ -508,22 +512,7 @@ class ICloudPhotosDownloader:
                     logging.ERROR)
                 created_date = photo.created
 
-            try:
-                if folder_structure.lower() == "none":
-                    date_path = ""
-                else:
-                    date_path = folder_structure.format(created_date)
-            except ValueError:  # pragma: no cover
-                # This error only seems to happen in Python 2
-                self.logger.set_tqdm_description(
-                    f"Photo created date was not valid ({photo.created})", logging.ERROR)
-                # e.g. ValueError: year=5 is before 1900
-                # (https://github.com/icloud-photos-downloader/icloud_photos_downloader/issues/122)
-                # Just use the Unix epoch
-                created_date = datetime.datetime.fromtimestamp(0)
-                date_path = folder_structure.format(created_date)
-
-            download_dir = os.path.normpath(os.path.join(directory, date_path))
+            download_dir = local_dowload_dir(directory, folder_structure, created_date)
             download_size = size
 
             try:
@@ -666,7 +655,7 @@ class ICloudPhotosDownloader:
                             download.download_media(
                                 self.icloud, photo, lp_download_path, lp_size
                             )
-            return download_photo
+        return download_photo
 
     def __build_delete_photo(self):
         def delete_photo(photo):
