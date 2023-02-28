@@ -25,13 +25,25 @@ from icloudpd.string_helpers import truncate_middle
 from icloudpd.autodelete import autodelete_photos
 from icloudpd.paths import local_download_path
 from icloudpd.paths import local_dowload_dir
+from icloudpd.paths import library_link_path
+from icloudpd.paths import filename_with_size
+
 from icloudpd import exif_datetime
 # Must import the constants object so that we can mock values in tests.
 from icloudpd import constants
 from icloudpd.counter import Counter
 
+from PIL import Image, ExifTags
+from pillow_heif import register_heif_opener
+import piexif
+from future.moves.urllib.parse import urlencode
+import base64
+from pyicloud_ipd.services.photos import PhotoAlbum
+from collections import namedtuple
+
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
+Todos = namedtuple("Todos", "photos_to_delete photos_to_link")
 
 @click.command(context_settings=CONTEXT_SETTINGS, options_metavar="<options>")
 # @click.argument(
@@ -49,13 +61,13 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option(
     "-p", "--password",
     help="Your iCloud password "
-    "(default: use PyiCloud keyring or prompt for password)",
+         "(default: use PyiCloud keyring or prompt for password)",
     metavar="<password>",
 )
 @click.option(
     "--cookie-directory",
     help="Directory to store cookies for authentication "
-    "(default: ~/.pyicloud)",
+         "(default: ~/.pyicloud)",
     metavar="</cookie/directory>",
     default="~/.pyicloud",
 )
@@ -79,7 +91,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option(
     "--until-found",
     help="Download most recently added photos until we find x number of "
-    "previously downloaded consecutive photos (default: download all photos)",
+         "previously downloaded consecutive photos (default: download all photos)",
     type=click.IntRange(0),
 )
 @click.option(
@@ -106,45 +118,45 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option(
     "--force-size",
     help="Only download the requested size "
-    + "(default: download original if size is not available)",
+         + "(default: download original if size is not available)",
     is_flag=True,
 )
 @click.option(
     "--auto-delete",
     help='Scans the "Recently Deleted" folder and deletes any files found in there. '
-    + "(If you restore the photo in iCloud, it will be downloaded again.)",
+         + "(If you restore the photo in iCloud, it will be downloaded again.)",
     is_flag=True,
 )
 @click.option(
     "--only-print-filenames",
     help="Only prints the filenames of all files that will be downloaded "
-    "(not including files that are already downloaded.)"
-    + "(Does not download or delete any files.)",
+         "(not including files that are already downloaded.)"
+         + "(Does not download or delete any files.)",
     is_flag=True,
 )
 @click.option(
     "--folder-structure",
     help="Folder structure (default: {:%Y/%m/%d}). "
-    "If set to 'none' all photos will just be placed into the download directory",
+         "If set to 'none' all photos will just be placed into the download directory",
     metavar="<folder_structure>",
     default="{:%Y/%m/%d}",
 )
 @click.option(
     "--set-exif-datetime",
     help="Write the DateTimeOriginal exif tag from file creation date, " +
-    "if it doesn't exist.",
+         "if it doesn't exist.",
     is_flag=True,
 )
 @click.option(
     "--smtp-username",
     help="Your SMTP username, for sending email notifications when "
-    "two-step authentication expires.",
+         "two-step authentication expires.",
     metavar="<smtp_username>",
 )
 @click.option(
     "--smtp-password",
     help="Your SMTP password, for sending email notifications when "
-    "two-step authentication expires.",
+         "two-step authentication expires.",
     metavar="<smtp_password>",
 )
 @click.option(
@@ -169,14 +181,14 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option(
     "--notification-email",
     help="Email address where you would like to receive email notifications. "
-    "Default: SMTP username",
+         "Default: SMTP username",
     metavar="<notification_email>",
 )
 @click.option(
     "--notification-script",
     type=click.Path(),
     help="Runs an external script when two factor authentication expires. "
-    "(path required: /path/to/my/script.sh)",
+         "(path required: /path/to/my/script.sh)",
 )
 @click.option(
     "--log-level",
@@ -186,7 +198,7 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 )
 @click.option("--no-progress-bar",
               help="Disables the one-line progress bar and prints log messages on separate lines "
-              "(Progress bar is disabled by default if there is no tty attached)",
+                   "(Progress bar is disabled by default if there is no tty attached)",
               is_flag=True,
               )
 @click.option(
@@ -198,8 +210,8 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 @click.option(
     "--delete-after-download",
     help='Delete the photo/video after download it.'
-    + ' The deleted items will be appear in the "Recently Deleted".'
-    + ' Therefore, should not combine with --auto-delete option.',
+         + ' The deleted items will be appear in the "Recently Deleted".'
+         + ' Therefore, should not combine with --auto-delete option.',
     is_flag=True,
 )
 @click.version_option()
@@ -232,7 +244,7 @@ def main(
         log_level,
         no_progress_bar,
         notification_script,
-        threads_num,    # pylint: disable=W0613
+        threads_num,  # pylint: disable=W0613
         delete_after_download
 ):
     """Download all iCloud photos to a local directory"""
@@ -257,34 +269,113 @@ def main(
         log_level=log_level)
 
     photos_downloader = ICloudPhotosDownloader(icloud=icloud, logger=logger)
+    photos_directory = directory + '/_Photos'
+    library_directory = directory + '/Library'
 
     if list_albums:
         photos_downloader.list_albums()
-    else:
-        photos_directory = directory + '/_Photos'
-        photos_downloader.download_and_save_album(
-            album_name=album,
-            directory=photos_directory,
-            skip_videos=skip_videos,
-            recent=recent,
-            until_found=until_found,
-            size=size, 
-            only_print_filenames=only_print_filenames,
-            no_progress_bar=no_progress_bar,
-            folder_structure=folder_structure,
-            force_size=force_size,
-            set_exif_datetime=set_exif_datetime,
-            skip_live_photos=skip_live_photos,
-            live_photo_size=live_photo_size,
-            delete_after_download=delete_after_download)
+    # else:
+    # photos_downloader.download_and_save_album(
+    #     album_name=album,
+    #     photos_directory=photos_directory,
+    #     skip_videos=skip_videos,
+    #     recent=recent,
+    #     until_found=until_found,
+    #     size=size,
+    #     only_print_filenames=only_print_filenames,
+    #     no_progress_bar=no_progress_bar,
+    #     force_size=force_size,
+    #     set_exif_datetime=set_exif_datetime,
+    #     skip_live_photos=skip_live_photos,
+    #     live_photo_size=live_photo_size,
+    #     delete_after_download=delete_after_download)
 
     if only_print_filenames:
         sys.exit(0)
+    albums = photos_downloader.get_albums()
+    for album in albums:
+        handle_album(photos_downloader=photos_downloader, photos_directory=photos_directory, library_directory=library_directory, album=album, size=size,
+                     photos_service=icloud.photos, logger=logger)
 
     logger.info("All photos have been downloaded!")
 
     if auto_delete:
-        autodelete_photos(icloud, folder_structure, directory)
+        autodelete_photos(icloud, photos_directory)
+
+
+def handle_album(photos_downloader, photos_directory, library_directory, album, size, logger, photos_service):
+    try:
+        determine_todos(photos_directory=photos_directory, album=album)
+
+        photos_downloader.link_album(photos_directory=photos_directory, library_directory=library_directory,
+                                     album=album, size=size)
+    except Exception as e:
+        logger.error(e)
+    try:
+        if album.list_type == 'CPLContainerRelationLiveByAssetDate':
+            sub_albums = collect_sub_albums(album, photos_service)
+            upd_library_dir = os.path.join(library_directory, album.name)
+            for sub_album in sub_albums:
+                handle_album(photos_downloader=photos_downloader, photos_directory=photos_directory,
+                             library_directory=upd_library_dir, album=sub_album, size=size, logger=logger,
+                             photos_service=photos_service)
+    except Exception as e:
+        logger.error(e)
+
+def determine_todos(photos_directory, album):
+    photos_to_delete = []
+    photos_to_link = []
+    return Todos(photos_to_link)
+
+def collect_sub_albums(album, photos_service):
+    def _fetch_folders():
+        url = ('%s/records/query?%s' %
+               (photos_service._service_endpoint, urlencode(photos_service.params)))
+        json_data = json.dumps({
+            "query": {"recordType": "CPLAlbumByPositionLive", "filterBy": album.query_filter },
+            "zoneID": {"zoneName": "PrimarySync"}})
+
+        request = photos_service.session.post(
+            url,
+            data=json_data,
+            headers={'Content-type': 'text/plain'}
+        )
+        response = request.json()
+
+        return response['records']
+
+    def _to_album(folder):
+        if folder['recordName'] in ('----Root-Folder----',
+                                    '----Project-Root-Folder----') or \
+                (folder['fields'].get('isDeleted') and
+                 folder['fields']['isDeleted']['value']):
+            return None
+        
+        folder_id = folder['recordName']
+        folder_obj_type = \
+            "CPLContainerRelationNotDeletedByAssetDate:%s" % folder_id
+        folder_name = base64.b64decode(
+            folder['fields']['albumNameEnc']['value']).decode('utf-8')
+        query_filter = [{
+            "fieldName": "parentId",
+            "comparator": "EQUALS",
+            "fieldValue": {
+                "type": "STRING",
+                "value": folder_id
+            }
+        }]
+        
+        return PhotoAlbum(photos_service, folder_name,
+                           'CPLContainerRelationLiveByAssetDate',
+                           folder_obj_type, 'ASCENDING', query_filter)
+
+
+    folders = _fetch_folders()
+    sub_albums = []
+    for folder in folders:
+        sub_albums.append(_to_album(folder))
+
+    return sub_albums
 
 
 def setup_and_configure_logger(only_print_filenames, log_level):
@@ -330,11 +421,10 @@ def authenticate_or_handle_2fa_required(
         smtp_no_tls,
         notification_email,
         notification_script):
-
     raise_error_on_2sa = (
-        smtp_username is not None
-        or notification_email is not None
-        or notification_script is not None
+            smtp_username is not None
+            or notification_email is not None
+            or notification_script is not None
     )
     try:
         icloud = authenticate(
@@ -371,22 +461,67 @@ class ICloudPhotosDownloader:
         album_titles = [str(a) for a in albums]
         print(*album_titles, sep="\n")
 
-    def download_and_save_album(self, album_name, directory, skip_videos, recent,
+    def get_albums(self):
+        albums_dict = self.__get_albums_or_die()
+        albums = albums_dict.values()  # pragma: no cover
+        return albums
+
+    def link_album(self, photos_directory, library_directory, album, size):
+        # TODO: handle progress bar stuff -> see download method
+        photos_enumerator = album
+        album_name = album.name
+        library_directory_path = os.path.join(library_directory, album_name)
+        library_directory_exists = os.path.exists(library_directory_path)
+        if not library_directory_exists:
+            # Create a new directory because it does not exist
+            os.makedirs(library_directory_path)
+        register_heif_opener()
+
+        photos_iterator = iter(photos_enumerator)
+        while True:
+            try:
+                item = next(photos_iterator)
+                photo = item
+                photos_directory_path = local_download_path(photo, size, photos_directory)
+
+                img = Image.open(photos_directory_path)
+                exif_dict_all = piexif.load(img.info["exif"])
+                exif_dict = exif_dict_all["Exif"]
+                if exif_dict is None:
+                    created_date = 'no_exif'
+                elif piexif.ExifIFD.DateTimeOriginal in exif_dict:
+                    created_date = exif_dict[piexif.ExifIFD.DateTimeOriginal]
+                    created_date = created_date.decode('utf-8')
+                    # sanitize for windows ->  use ISO 8601 format, without separators
+                    created_date = created_date.replace(' ', 'T')
+                    created_date = created_date.replace(':', '_')
+                else:
+                    created_date = ''
+
+                # if photo.item_type_extension.lower() == 'heic':
+                #     f = open(photos_directory_path, 'rb')
+                #     tags = exifread.process_file(f)
+                #     print(tags)
+
+                library_name = filename_with_size(photo, size)
+                if created_date:
+                    library_name = f"{created_date} - {library_name}"
+                library_path = os.path.join(library_directory_path, library_name)
+
+                link_exists = os.path.islink(library_path)
+                if not link_exists:
+                    os.symlink(photos_directory_path, library_path)
+            except StopIteration:
+                break
+
+    def download_and_save_album(self, album_name, photos_directory, skip_videos, recent,
                                 until_found, size, only_print_filenames, no_progress_bar,
-                                folder_structure, force_size, set_exif_datetime,
+                                force_size, set_exif_datetime,
                                 skip_live_photos, live_photo_size, delete_after_download):
 
+        photos_directory = os.path.normpath(photos_directory)
 
-        directory = os.path.normpath(directory)
-
-        self.logger.debug(
-            "Looking up all photos%s from album %s...",
-            "" if skip_videos else " and videos",
-            album_name)
-
-        album = self.__get_albums_or_die()[album_name]
-
-        album.exception_handler = self.__build_photos_exception_handler()
+        album = self.__get_album_with_ex_handler(album_name, skip_videos)
 
         photos_count = len(album)
 
@@ -414,7 +549,7 @@ class ICloudPhotosDownloader:
             size,
             plural_suffix,
             video_suffix,
-            directory,
+            photos_directory,
         )
 
         # Use only ASCII characters in progress bar
@@ -437,8 +572,7 @@ class ICloudPhotosDownloader:
         should_break = self.__build_should_break(until_found)
         download_photo = self.__build_download_photo(
             skip_videos=skip_videos,
-            directory=directory,
-            folder_structure=folder_structure,
+            photos_directory=photos_directory,
             size=size,
             force_size=force_size,
             only_print_filenames=only_print_filenames,
@@ -457,8 +591,9 @@ class ICloudPhotosDownloader:
                     break
                 item = next(photos_iterator)
                 download_photo(consecutive_files_found, item)
-                if delete_after_download:
-                    delete_photo(item)
+                # if delete_after_download:
+                # TODO: kill we don´t want to delete by accident
+                # delete_photo(item)
             except StopIteration:
                 break
 
@@ -480,16 +615,18 @@ class ICloudPhotosDownloader:
                     # there are some issues with the Apple servers
                     time.sleep(constants.WAIT_SECONDS * retries)
                 self.icloud.authenticate()
+
         return photos_exception_handler
 
     def __build_should_break(self, until_found):
         def should_break(counter):
             """Exit if until_found condition is reached"""
             return until_found is not None and counter.value() >= until_found
+
         return should_break
 
     def __build_download_photo(
-            self, skip_videos, directory, folder_structure, size,
+            self, skip_videos, photos_directory, size,
             force_size, only_print_filenames, set_exif_datetime, skip_live_photos, live_photo_size):
         def download_photo(counter, photo):
             """internal function for actually downloading the photos"""
@@ -512,7 +649,7 @@ class ICloudPhotosDownloader:
                     logging.ERROR)
                 created_date = photo.created
 
-            download_dir = local_dowload_dir(directory, folder_structure, created_date)
+            # disabled folder_structure here as we create the library structure
             download_size = size
 
             try:
@@ -550,9 +687,10 @@ class ICloudPhotosDownloader:
                 download_size = "original"
 
             download_path = local_download_path(
-                photo, download_size, download_dir)
+                photo, download_size, photos_directory)
 
             file_exists = os.path.isfile(download_path)
+            # TODO: not handled like this in other places - e.g. autodelete
             if not file_exists and download_size == "original":
                 # Deprecation - We used to download files like IMG_1234-original.jpg,
                 # so we need to check for these.
@@ -623,7 +761,7 @@ class ICloudPhotosDownloader:
                         filename = filename.replace(
                             ".MOV", f"-{live_photo_size}.MOV"
                         )
-                    lp_download_path = os.path.join(download_dir, filename)
+                    lp_download_path = os.path.join(photos_directory, filename)
 
                     lp_file_exists = os.path.isfile(lp_download_path)
 
@@ -655,6 +793,7 @@ class ICloudPhotosDownloader:
                             download.download_media(
                                 self.icloud, photo, lp_download_path, lp_size
                             )
+
         return download_photo
 
     def __build_delete_photo(self):
@@ -662,8 +801,8 @@ class ICloudPhotosDownloader:
             """Delete a photo from the iCloud account."""
             self.logger.info("Deleting %s", photo.filename)
             # pylint: disable=W0212
-            url = f"{self.icloud.photos._service_endpoint}/records/modify?"\
-                f"{urllib.parse.urlencode(self.icloud.photos.params)}"
+            url = f"{self.icloud.photos._service_endpoint}/records/modify?" \
+                  f"{urllib.parse.urlencode(self.icloud.photos.params)}"
             post_data = json.dumps(
                 {
                     "atomic": True,
@@ -683,7 +822,20 @@ class ICloudPhotosDownloader:
             self.icloud.photos.session.post(
                 url, data=post_data, headers={
                     "Content-type": "application/json"})
+
         return delete_photo
+
+    def __get_album_with_ex_handler(self, album_name, skip_videos):
+        self.logger.debug(
+            "Looking up all photos%s from album %s...",
+            "" if skip_videos else " and videos",
+            album_name)
+
+        album = self.__get_albums_or_die()[album_name]
+
+        album.exception_handler = self.__build_photos_exception_handler()
+
+        return album
 
     def __get_albums_or_die(self):
         # Default album is "All Photos", so this is the same as

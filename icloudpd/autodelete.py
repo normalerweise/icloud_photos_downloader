@@ -6,7 +6,7 @@ from icloudpd.logger import setup_logger
 from icloudpd.paths import local_download_path
 
 
-def autodelete_photos(icloud, folder_structure, directory):
+def autodelete_photos(icloud, directory):
     """
     Scans the "Recently Deleted" folder and deletes any matching files
     from the download directory.
@@ -19,8 +19,8 @@ def autodelete_photos(icloud, folder_structure, directory):
 
     for media in recently_deleted:
         created_date = media.created
-        date_path = folder_structure.format(created_date)
-        download_dir = os.path.join(directory, date_path)
+        # disabled folder_structure as we are building the Library structure
+        download_dir = directory
 
         for size in [None, "original", "medium", "thumb"]:
             path = os.path.normpath(
