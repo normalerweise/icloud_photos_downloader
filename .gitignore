@@ -13,8 +13,13 @@ __pycache__
 .coverage.*
 htmlcov
 *.whl
+icloudpd-latest-py2.py3-none-any.whl
 .venv
 venv
+.env
+env
+environment
+.environment
 *.spec
 # docs
 docs/_build
@@ -24,3 +29,6 @@ node_modules/
 /package-lock.json
 # used for local troubleshooting
 .photos
+cron_script.sh
+Photos/
+.vscode
