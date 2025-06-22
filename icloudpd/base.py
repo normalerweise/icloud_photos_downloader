@@ -280,6 +280,23 @@ def main(
 
     if only_print_filenames:
         sys.exit(0)
+    
+    # Initialize directory structure for dual hierarchy
+    from pathlib import Path
+    from .types import DataPath
+    from .models import DirectoryStructure
+    from .directory_manager import create_directory_structure
+    
+    base_dir = DataPath(Path(directory))
+    structure_result = create_directory_structure(base_dir)
+    if hasattr(structure_result, 'error'):
+        logger.error("Failed to create directory structure: %s", structure_result.error)
+        sys.exit(1)
+    
+    directory_structure = structure_result.value
+    photos_directory = directory_structure.data_dir  # _Data/ directory
+    library_directory = directory_structure.library_dir  # Library/ directory
+    
     albums = photos_downloader.get_albums()
     for album in albums:
         handle_album(photos_downloader=photos_downloader, photos_directory=photos_directory, library_directory=library_directory, album=album, size=size,
@@ -374,7 +391,7 @@ def link_album(photos_directory, album_directory, photos_to_link, size):
             library_name = filename_with_size(photo, size)
             if created_date:
                 library_name = f"{created_date} - {library_name}"
-            library_path = os.path.join(library_directory_path, library_name)
+            library_path = os.path.join(album_directory, library_name)
 
             link_exists = os.path.islink(library_path)
             if not link_exists:

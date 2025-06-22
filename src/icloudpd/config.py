@@ -39,11 +39,20 @@ class Config:
         no_progress_bar: bool,
         notification_script: Optional[str],
         threads_num: int,
-        delete_after_download: bool,
-        keep_icloud_recent_days: Optional[int],
+        # REMOVED: iCloud deletion parameters for backup-only safety
         domain: str,
         watch_with_interval: Optional[int],
         dry_run: bool,
+        test_mode: bool,
+        max_photos: Optional[int],
+        max_photos_per_album: Optional[int], 
+        max_recent_photos: Optional[int],
+        albums: Optional[str],
+        exclude_album: Optional[str],
+        recent_days: Optional[int],
+        date_from: Optional[str],
+        date_to: Optional[str],
+        debug_first: Optional[int],
         raw_policy: RawTreatmentPolicy,
         password_providers: Dict[
             str, Tuple[Callable[[str], Optional[str]], Callable[[str, str], None]]
@@ -81,11 +90,20 @@ class Config:
         self.no_progress_bar = no_progress_bar
         self.notification_script = notification_script
         self.threads_num = threads_num
-        self.delete_after_download = delete_after_download
-        self.keep_icloud_recent_days = keep_icloud_recent_days
+        # REMOVED: iCloud deletion assignments for backup-only safety
         self.domain = domain
         self.watch_with_interval = watch_with_interval
         self.dry_run = dry_run
+        self.test_mode = test_mode
+        self.max_photos = max_photos
+        self.max_photos_per_album = max_photos_per_album
+        self.max_recent_photos = max_recent_photos
+        self.albums = albums
+        self.exclude_album = exclude_album
+        self.recent_days = recent_days
+        self.date_from = date_from
+        self.date_to = date_to
+        self.debug_first = debug_first
         self.raw_policy = raw_policy
         self.password_providers = " ".join(str(e) for e in password_providers)
         self.file_match_policy = file_match_policy

@@ -501,20 +501,9 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     type=click.IntRange(1),
     default=1,
 )
-@click.option(
-    "--delete-after-download",
-    help="Delete the photo/video after download it."
-    + ' The deleted items will be appear in the "Recently Deleted".'
-    + " Therefore, should not combine with --auto-delete option.",
-    is_flag=True,
-)
-@click.option(
-    "--keep-icloud-recent-days",
-    help="Keep photos newer than this many days in iCloud. Deletes the rest. "
-    + "If set to 0, all photos will be deleted from iCloud.",
-    type=click.IntRange(0),
-    default=None,
-)
+# REMOVED: iCloud deletion CLI options for backup-only safety
+# - --delete-after-download option removed to prevent iCloud modifications  
+# - --keep-icloud-recent-days option removed to prevent iCloud modifications
 @click.option(
     "--domain",
     help="What iCloud root domain to use. Use 'cn' for mainland China (default: 'com')",
@@ -531,6 +520,66 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     help="Do not modify local system or iCloud",
     is_flag=True,
     default=False,
+)
+@click.option(
+    "--test-mode",
+    help="Enable safe testing mode (max 10 photos, dry-run, verbose)",
+    is_flag=True,
+    default=False,
+)
+@click.option(
+    "--max-photos",
+    help="Maximum number of photos to process across all albums",
+    type=click.IntRange(1),
+    default=None,
+)
+@click.option(
+    "--max-photos-per-album", 
+    help="Maximum number of photos to process per album",
+    type=click.IntRange(1),
+    default=None,
+)
+@click.option(
+    "--max-recent-photos",
+    help="Process only N most recent photos",
+    type=click.IntRange(1),
+    default=None,
+)
+@click.option(
+    "--albums",
+    help="Comma-separated list of album names to process",
+    type=str,
+    default=None,
+)
+@click.option(
+    "--exclude-album",
+    help="Album name to exclude from processing",
+    type=str,
+    default=None,
+)
+@click.option(
+    "--recent-days",
+    help="Process photos from last N days only",
+    type=click.IntRange(1),
+    default=None,
+)
+@click.option(
+    "--date-from",
+    help="Process photos from this date forward (YYYY-MM-DD)",
+    type=str,
+    default=None,
+)
+@click.option(
+    "--date-to", 
+    help="Process photos up to this date (YYYY-MM-DD)",
+    type=str,
+    default=None,
+)
+@click.option(
+    "--debug-first",
+    help="Process only first N photos found (for debugging)",
+    type=click.IntRange(1),
+    default=None,
 )
 @click.option(
     "--keep-unicode-in-filenames",
@@ -638,11 +687,20 @@ def main(
     no_progress_bar: bool,
     notification_script: Optional[str],
     threads_num: int,
-    delete_after_download: bool,
-    keep_icloud_recent_days: Optional[int],
+    # REMOVED: iCloud deletion parameters for backup-only safety
     domain: str,
     watch_with_interval: Optional[int],
     dry_run: bool,
+    test_mode: bool,
+    max_photos: Optional[int],
+    max_photos_per_album: Optional[int], 
+    max_recent_photos: Optional[int],
+    albums: Optional[str],
+    exclude_album: Optional[str],
+    recent_days: Optional[int],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    debug_first: Optional[int],
     filename_cleaner: Callable[[str], str],
     lp_filename_generator: Callable[[str], str],
     raw_policy: RawTreatmentPolicy,
@@ -681,15 +739,14 @@ def main(
             print("--auth-only, --directory, --list-libraries or --list-albums are required")
             sys.exit(2)
 
-        if auto_delete and delete_after_download:
-            print("--auto-delete and --delete-after-download are mutually exclusive")
-            sys.exit(2)
-
-        if keep_icloud_recent_days and delete_after_download:
-            print(
-                "--keep-icloud-recent-days and --delete-after-download should not be used together."
-            )
-            sys.exit(2)
+        # REMOVED: iCloud deletion validation logic for backup-only safety
+        
+        # Apply test mode settings
+        if test_mode:
+            logger.info("Test mode enabled: limiting to 10 photos, enabling dry-run and debug logging")
+            dry_run = True
+            max_photos = min(max_photos or 10, 10)  # Limit to maximum 10 photos in test mode
+            logger.setLevel(logging.DEBUG)
 
         if watch_with_interval and (list_albums or only_print_filenames):  # pragma: no cover
             print(
@@ -757,11 +814,20 @@ def main(
             no_progress_bar=no_progress_bar,
             notification_script=notification_script,
             threads_num=threads_num,
-            delete_after_download=delete_after_download,
-            keep_icloud_recent_days=keep_icloud_recent_days,
+            # REMOVED: iCloud deletion config parameters for backup-only safety  
             domain=domain,
             watch_with_interval=watch_with_interval,
             dry_run=dry_run,
+            test_mode=test_mode,
+            max_photos=max_photos,
+            max_photos_per_album=max_photos_per_album,
+            max_recent_photos=max_recent_photos,
+            albums=albums,
+            exclude_album=exclude_album,
+            recent_days=recent_days,
+            date_from=date_from,
+            date_to=date_to,
+            debug_first=debug_first,
             raw_policy=raw_policy,
             password_providers=password_providers,
             file_match_policy=file_match_policy,
@@ -834,8 +900,7 @@ def main(
             notification_email_from,
             no_progress_bar,
             notification_script,
-            delete_after_download,
-            keep_icloud_recent_days,
+            # REMOVED: iCloud deletion parameters for backup-only safety
             domain,
             logger,
             watch_with_interval,
@@ -1086,53 +1151,9 @@ def download_builder(
     return state_
 
 
-def delete_photo(
-    logger: logging.Logger,
-    photo_service: PhotosService,
-    library_object: PhotoLibrary,
-    photo: PhotoAsset,
-) -> None:
-    """Delete a photo from the iCloud account."""
-    clean_filename_local = photo.filename
-    logger.debug("Deleting %s in iCloud...", clean_filename_local)
-    url = (
-        f"{library_object.service_endpoint}/records/modify?"
-        f"{urllib.parse.urlencode(photo_service.params)}"
-    )
-    post_data = json.dumps(
-        {
-            "atomic": True,
-            "desiredKeys": ["isDeleted"],
-            "operations": [
-                {
-                    "operationType": "update",
-                    "record": {
-                        "fields": {"isDeleted": {"value": 1}},
-                        "recordChangeTag": photo._asset_record["recordChangeTag"],
-                        "recordName": photo._asset_record["recordName"],
-                        "recordType": "CPLAsset",
-                    },
-                }
-            ],
-            "zoneID": library_object.zone_id,
-        }
-    )
-    photo_service.session.post(url, data=post_data, headers={"Content-type": "application/json"})
-    logger.info("Deleted %s in iCloud", clean_filename_local)
-
-
-def delete_photo_dry_run(
-    logger: logging.Logger,
-    _photo_service: PhotosService,
-    library_object: PhotoLibrary,
-    photo: PhotoAsset,
-) -> None:
-    """Dry run for deleting a photo from the iCloud"""
-    logger.info(
-        "[DRY RUN] Would delete %s in iCloud library %s",
-        photo.filename,
-        library_object.zone_id["zoneName"],
-    )
+# REMOVED: iCloud deletion functions for backup-only safety
+# - delete_photo() function removed to prevent iCloud modifications
+# - delete_photo_dry_run() function removed to prevent iCloud modifications
 
 
 RetrierT = TypeVar("RetrierT")
@@ -1230,8 +1251,7 @@ def core(
     notification_email_from: Optional[str],
     no_progress_bar: bool,
     notification_script: Optional[str],
-    delete_after_download: bool,
-    keep_icloud_recent_days: Optional[int],
+    # REMOVED: iCloud deletion parameters for backup-only safety
     domain: str,
     logger: logging.Logger,
     watch_interval: Optional[int],
@@ -1419,38 +1439,8 @@ def core(
                         )
                         break
                     item = next(photos_iterator)
-                    should_delete = False
-
-                    if download_photo(consecutive_files_found, item) and delete_after_download:
-                        should_delete = True
-
-                    if keep_icloud_recent_days is not None:
-                        created_date = item.created.astimezone(get_localzone())
-                        age_days = (now - created_date).days
-                        logger.debug(f"Created date: {created_date}")
-                        logger.debug(f"Keep iCloud recent days: {keep_icloud_recent_days}")
-                        logger.debug(f"Age days: {age_days}")
-                        if age_days < keep_icloud_recent_days:
-                            logger.debug(
-                                "Skipping deletion of %s as it is within the keep_icloud_recent_days period (%d days old)",
-                                item.filename,
-                                age_days,
-                            )
-                        else:
-                            should_delete = True
-
-                    if should_delete:
-                        delete_local = partial(
-                            delete_photo_dry_run if dry_run else delete_photo,
-                            logger,
-                            icloud.photos,
-                            library_object,
-                            item,
-                        )
-
-                        retrier(delete_local, error_handler)
-                        if photos.direction != "DESCENDING":
-                            photos.increment_offset(-1)
+                    # REMOVED: iCloud deletion logic for backup-only safety
+                    # This tool now operates in backup-only mode and never deletes photos from iCloud
 
                     photos_counter += 1
                     status_exchange.get_progress().photos_counter = photos_counter
