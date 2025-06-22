@@ -141,6 +141,7 @@ class SyncConfiguration:
 class DirectoryStructure:
     """Immutable representation of the dual hierarchy directory structure."""
     
+    base_directory: DataPath
     data_dir: DataPath
     library_dir: LibraryPath
     timeline_dir: TimelinePath
@@ -151,6 +152,7 @@ class DirectoryStructure:
         """Create directory structure from base directory."""
         base_path = base_directory
         return cls(
+            base_directory=base_directory,
             data_dir=DataPath(base_path / "_Data"),
             library_dir=LibraryPath(base_path / "Library"),
             timeline_dir=TimelinePath(base_path / "Timeline"),

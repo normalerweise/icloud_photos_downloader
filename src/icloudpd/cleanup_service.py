@@ -114,8 +114,7 @@ class LocalFileCleanupService:
         """Move a photo file to the deleted directory."""
         try:
             source_path = Path(self.structure.data_dir) / photo.filename
-            deleted_dir = Path(self.structure.base_directory) / "_Deleted"
-            target_path = deleted_dir / photo.filename
+            target_path = Path(self.structure.deleted_dir) / photo.filename
             
             if not source_path.exists():
                 return False  # Already moved or doesn't exist
@@ -125,7 +124,7 @@ class LocalFileCleanupService:
                 return True
             
             # Ensure deleted directory exists
-            deleted_dir.mkdir(parents=True, exist_ok=True)
+            Path(self.structure.deleted_dir).mkdir(parents=True, exist_ok=True)
             
             # Move file
             source_path.rename(target_path)
