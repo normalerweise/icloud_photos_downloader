@@ -345,23 +345,218 @@ The dev branch currently has **broken code** that cannot run:
 ### Immediate Next Step
 Start with **Phase 1** to fix the broken state, then proceed incrementally.
 
+## Updated Target State Specification (2025-06-22)
+
+### ✅ **BACKUP-ONLY TOOL CONSTRAINT**
+**Critical Safety Requirement**: This tool must be read-only for iCloud operations.
+
+#### **Code to Remove (Phase 0 Priority)**:
+- **`delete_photo()`** function - `src/icloudpd/base.py:1089-1121`
+- **`delete_photo_dry_run()`** function - `src/icloudpd/base.py:1424-1451`
+- **`--delete-after-download`** CLI option - Lines 505-510
+- **`--keep-icloud-recent-days`** CLI option - Lines 512-516
+- All related iCloud POST operations and deletion logic
+
+#### **Backup-Only Behavior**:
+- **iCloud Operations**: Read-only access (download, list albums)
+- **Local Operations**: Create/delete local files and symlinks only
+- **Safety**: Zero capability to modify iCloud Photos library
+
+### ✅ **MODERN PYTHON ARCHITECTURE**
+
+#### **Code Style Requirements**:
+- **Composition over Inheritance**: Replace inheritance with dependency injection
+- **Functional Programming**: Pure functions, immutable data, higher-order functions
+- **Type Safety**: Comprehensive type hints with domain-specific types
+- **Modern Tooling**: ruff + pyright + uv (not mypy/black/flake8)
+- **Line Width**: 100 characters for modern widescreen monitors
+
+#### **Type Safety with Domain-Specific Types**:
+```python
+# Replace primitives with domain-specific types
+PhotoId = NewType('PhotoId', str)
+AlbumName = NewType('AlbumName', str)
+Filename = NewType('Filename', str)
+FileSizeBytes = NewType('FileSizeBytes', int)
+PhotoCount = NewType('PhotoCount', int)
+DataPath = NewType('DataPath', Path)
+LibraryPath = NewType('LibraryPath', Path)
+TimelinePath = NewType('TimelinePath', Path)
+
+# Enums for specific values
+class PhotoFormat(Enum):
+    HEIC = "heic"
+    JPEG = "jpg"
+    PNG = "png"
+    RAW = "raw"
+    MOV = "mov"
+
+SizeOption = Literal["original", "medium", "thumb"]
+```
+
+#### **Immutable Data Structures**:
+```python
+@dataclass(frozen=True)
+class Photo:
+    id: PhotoId
+    filename: Filename
+    creation_date: CreationDate
+    size_bytes: FileSizeBytes
+    format: PhotoFormat
+    albums: frozenset[AlbumName]
+
+@dataclass(frozen=True)
+class SyncConfig:
+    base_directory: DataPath
+    size_preference: SizeOption = "original"
+    create_timeline: bool = True
+    create_library: bool = True
+```
+
+#### **Composition Architecture**:
+```python
+# Replace inheritance with composition
+@dataclass(frozen=True)
+class SyncService:
+    icloud_reader: ICloudReader
+    local_storage: LocalStorage
+    change_detector: ChangeDetector
+    progress_reporter: ProgressReporter
+```
+
+### ✅ **MODERN TOOLING STACK**
+
+#### **Tools Configuration**:
+```toml
+# pyproject.toml updates
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "PIE", "TCH", "TRY", "RUF", "ANN"]
+
+[tool.pyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.9"
+```
+
+#### **Development Commands**:
+```bash
+# Replace old tooling
+uv sync --dev                    # Instead of pip install -e .[dev,test]
+uv run ruff format . && uv run ruff check . --fix  # Instead of black + flake8
+uv run pyright                   # Instead of mypy
+uv run pytest                    # Test execution
+```
+
+### ✅ **TESTING APPROACH: Real iCloud Data with Limited Subsets**
+
+#### **Philosophy**: 
+- Test against real iCloud Photos (not mocks)
+- Use limited subsets for fast iteration
+- Progressive testing from 5 photos to larger sets
+
+#### **CLI Testing Options**:
+```bash
+# Photo count limits
+--max-photos N                   # Process maximum N photos total
+--max-photos-per-album N         # Process maximum N photos per album
+--max-recent-photos N            # Process N most recent photos
+
+# Album selection
+--album "Album Name"             # Process single specific album
+--albums "Album1,Album2"         # Process comma-separated list
+--exclude-album "Large Album"    # Exclude specific albums
+
+# Date-based limits
+--recent-days N                  # Process photos from last N days
+--date-from YYYY-MM-DD          # Process from this date forward
+--date-to YYYY-MM-DD            # Process up to this date
+
+# Development modes
+--dry-run                       # Show what would be downloaded
+--test-mode                     # Safe defaults (max 10 photos, dry-run)
+--debug-first N                 # Process only first N photos found
+```
+
+#### **Progressive Testing Workflow**:
+```bash
+# Step 1: Dry run with minimal photos
+icloudpd /path/to/backup --test-mode --dry-run
+
+# Step 2: Download 5 photos to test structure
+icloudpd /path/to/backup --max-photos 5 --album "Recent"
+
+# Step 3: Test specific functionality
+icloudpd /path/to/backup --max-photos 20 --recent-days 3
+
+# Step 4: Test multiple albums
+icloudpd /path/to/backup --albums "Album1,Album2" --max-photos-per-album 10
+
+# Step 5: Scale up gradually
+icloudpd /path/to/backup --max-photos 100 --recent-days 30
+```
+
+### ✅ **FINAL IMPLEMENTATION ROADMAP**
+
+#### **Phase 0: Safety + Testing Infrastructure** *(MUST BE FIRST)*
+- Remove all iCloud deletion functions and CLI options
+- Add testing CLI options (--test-mode, --max-photos, --dry-run)
+- Migrate to modern tooling (ruff, pyright, uv)
+- Implement safety validation for testing limits
+
+#### **Phase 1: Type-Safe Foundation** *(2-3 hours)*
+- Create domain-specific types and immutable data structures
+- Fix undefined variables with type-safe patterns
+- Implement basic directory structure (_Data/, Library/, Timeline/)
+- **Test**: `--test-mode --max-photos 5`
+
+#### **Phase 2: Composition-Based Core** *(3-4 hours)*
+- Replace inheritance with composition patterns
+- Implement typed protocols and dependency injection
+- Create pure functions for path calculations and date handling
+- **Test**: `--album "Recent" --max-photos 20 --dry-run`
+
+#### **Phase 3: Functional Integration** *(2-3 hours)*
+- Implement download pipeline with functional patterns
+- Add symlink creation for both Timeline and Library hierarchies
+- Handle Live Photos and RAW+JPEG with typed structures
+- **Test**: `--albums "Album1,Album2" --max-photos-per-album 5`
+
+#### **Phase 4: Immutable State Management** *(3-4 hours)*
+- Implement change detection with immutable data
+- Add album filtering and date-based selection
+- Handle incremental updates and local file cleanup
+- **Test**: `--recent-days 7 --max-photos 30`
+
+#### **Phase 5: Production Polish** *(2-3 hours)*
+- Achieve 100% pyright compliance
+- Add comprehensive error handling with Result types
+- Implement progress reporting and performance optimization
+- **Test**: Progressive scale-up to `--max-photos 500`
+
 ## Session Status (2025-06-22)
 
 ### ✅ **Completed This Session**
-- Full project understanding and context analysis
-- Complete dual hierarchy specification defined
-- Current broken state identified and analyzed  
-- 5-phase migration strategy planned
-- All decisions documented for implementation
+- Complete backup-only constraint specification
+- Modern Python architecture with composition and functional programming
+- Type safety with domain-specific types
+- Modern tooling migration plan (ruff + pyright + uv)
+- Real iCloud testing approach with limited subsets
+- Complete 5-phase implementation roadmap
 
-### 🎯 **Ready for Next Session**
-- **Start Point**: Begin Phase 1 implementation (fix undefined variables in base.py:285-286)
-- **Clear Plan**: Follow 5-phase strategy outlined above
-- **All Context**: Complete specification and migration plan documented
+### 🎯 **Ready for Implementation**
+- **Start Point**: Phase 0 (Remove iCloud deletion code + add testing infrastructure)
+- **Architecture**: Fully specified with modern Python patterns
+- **Testing**: Real iCloud data with progressive subset testing
+- **Safety**: Backup-only operations with comprehensive safeguards
 
-### 🔧 **Key Implementation Files to Start With**
-- Fix: `icloudpd/base.py` (lines 285-286, 377) - undefined variables
-- Complete: `icloudpd/file_system_photos_library.py` - missing imports and implementation
-- Add: Timeline functionality (completely missing)
+### 🔧 **Implementation-Ready Specifications**
+- All architectural decisions documented
+- Type system completely defined
+- Tooling configuration specified
+- Testing approach with CLI options planned
+- Implementation roadmap with clear phases and testing at each step
 
-**Status**: Ready to begin implementation in next session.
+**Status**: All specifications complete. Ready to begin Phase 0 implementation.
