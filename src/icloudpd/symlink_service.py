@@ -277,6 +277,8 @@ class LivePhotoSymlinkManager:
     
     def create_live_photo_links(self, photo: Photo, data_directory: DataPath) -> SymlinkBatch:
         """Create symlinks for Live Photos (both image and video components)."""
+        from .types import PhotoType
+        
         if photo.photo_type != PhotoType.LIVE:
             # Delegate to base manager for non-Live photos
             return self.base_manager.create_all_symlinks_functional(frozenset([photo]), data_directory)
