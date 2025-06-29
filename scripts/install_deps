@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
-# this is used to setup development env (all required dependencies for all cases)
+# Modern dependency management with uv
 set -euo pipefail
-python3 -m pip install --disable-pip-version-check -r requirements-pip.txt
-pip3 install --disable-pip-version-check -e .[test,dev]
+
+# Check if uv is installed
+if ! command -v uv &> /dev/null; then
+    echo "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+# Install project dependencies with uv
+echo "Installing project dependencies with uv..."
+uv sync --all-extras
+
+# Alternative: Legacy pip-based installation (commented out)
+# python3 -m pip install --disable-pip-version-check -r requirements-pip.txt
+# pip3 install --disable-pip-version-check -e .[test,dev]

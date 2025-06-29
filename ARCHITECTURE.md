@@ -30,6 +30,7 @@ The iCloud Photos Downloader has been completely modernized from a monolithic st
 - **📁 Dual Organization**: Timeline (by date) and Library (by album) hierarchies
 - **⚡ Performance**: Optimized for large photo collections (10K+ photos)
 - **🔧 Production Ready**: Comprehensive error handling, logging, and monitoring
+- **🚀 Modern Tooling**: uv, ruff, pyright for fast, reliable development
 
 ---
 
@@ -446,6 +447,91 @@ class ConcurrentDownloader:
 - **Batch Processing**: Process photos in batches of 100
 - **Memory Management**: Smart caching with automatic eviction
 - **Retry Logic**: Exponential backoff for failed operations
+
+---
+
+## Modern Tooling with uv
+
+### 🚀 **uv Package Manager**
+
+The project uses [uv](https://docs.astral.sh/uv/) as the modern Python package manager, replacing pip/poetry for faster, more reliable dependency management.
+
+**Key Benefits**:
+- **10-100x faster** than pip for dependency resolution
+- **Unified tooling**: Manages Python versions, virtual environments, and packages
+- **Lock files**: Deterministic builds with `uv.lock`
+- **Cross-platform**: Consistent behavior across development environments
+
+**Common uv Commands**:
+```bash
+# Project setup
+uv sync --all-extras              # Install all dependencies
+uv add requests                   # Add new dependency
+uv remove old-package            # Remove dependency
+
+# Development
+uv run python script.py          # Run script in project environment
+uv run pytest                    # Run tests
+uv run ruff check                # Lint code
+uv run pyright                   # Type check
+
+# Environment management
+uv python install 3.11           # Install Python version
+uv python list                   # List available Python versions
+uv venv                          # Create virtual environment
+```
+
+**Integration with CI/CD**:
+```yaml
+# GitHub Actions example
+- name: Install uv
+  uses: astral-sh/setup-uv@v4
+  with:
+    enable-cache: true
+    cache-dependency-glob: "uv.lock"
+
+- name: Install dependencies
+  run: uv sync --all-extras
+
+- name: Run tests
+  run: uv run pytest
+```
+
+### 🧹 **ruff Linting & Formatting**
+
+**Purpose**: Fast, comprehensive linting and formatting replacing black, flake8, isort, etc.
+
+```bash
+# Linting
+uv run ruff check .               # Check for errors
+uv run ruff check --fix .        # Auto-fix errors
+
+# Formatting  
+uv run ruff format .              # Format code
+uv run ruff format --check .     # Check formatting
+```
+
+**Configuration** in `pyproject.toml`:
+- **Line Length**: 100 characters (modern wide screens)
+- **Python Version**: 3.9+ compatibility
+- **Selected Rules**: Comprehensive set including type checking, performance, security
+
+### 🔍 **pyright Type Checking**
+
+**Purpose**: Modern, fast type checker replacing mypy with better inference and editor integration.
+
+```bash
+# Type checking
+uv run pyright                   # Check all files
+uv run pyright src/             # Check specific directory
+uv run pyright --stats          # Show type coverage statistics
+```
+
+**Benefits over mypy**:
+- **Faster**: 5-10x faster type checking
+- **Better inference**: More accurate type detection
+- **Editor integration**: Native VS Code integration
+- **Modern features**: Better support for generics, protocols, TypedDict
 
 ---
 

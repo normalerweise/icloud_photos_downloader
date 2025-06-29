@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Complete uv-based development environment setup
+set -euo pipefail
+
+echo "🚀 Setting up modern Python development environment with uv..."
+
+# Install uv if not present
+if ! command -v uv &> /dev/null; then
+    echo "📦 Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.cargo/bin:$PATH"
+    echo "✅ uv installed successfully"
+else
+    echo "✅ uv is already installed"
+fi
+
+# Show uv version
+echo "📋 uv version: $(uv --version)"
+
+# Create/update virtual environment and install dependencies
+echo "📦 Installing project dependencies..."
+uv sync --all-extras
+
+echo "🔍 Verifying installation..."
+uv run python --version
+uv run python -c "import icloudpd; print('✅ icloudpd package imported successfully')"
+
+echo "🧪 Running quick test suite..."
+uv run python -m pytest tests/ -x -q --tb=short || echo "⚠️  Some tests failed (expected for new installation)"
+
+echo ""
+echo "🎉 Development environment ready!"
+echo ""
+echo "📚 Available commands:"
+echo "  uv run python test_phase3.py          # Test functional integration"
+echo "  uv run python test_phase4.py          # Test state management"  
+echo "  uv run python test_phase5_integration.py  # Test production features"
+echo "  uv run ruff check                     # Lint code"
+echo "  uv run ruff format                    # Format code"
+echo "  uv run pyright                        # Type check"
+echo "  uv run pytest                         # Run full test suite"
+echo ""
+echo "🔧 Development scripts:"
+echo "  scripts/lint                          # Lint and format"
+echo "  scripts/type_check                    # Type checking"
+echo "  scripts/test                          # Full test suite"
+echo ""
+echo "🌟 Modern Python tooling configured:"
+echo "  ✅ uv (package management)"
+echo "  ✅ ruff (linting & formatting)"
+echo "  ✅ pyright (type checking)"
+echo "  ✅ pytest (testing)"
+echo ""

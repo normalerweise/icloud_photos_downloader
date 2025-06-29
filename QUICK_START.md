@@ -4,28 +4,38 @@
 
 ## 🚀 Quick Setup
 
-### 1. **Environment Setup**
+### 1. **Modern Environment Setup with uv**
 ```bash
 # Clone and navigate to project
 cd icloud_photos_downloader
 
-# Install dependencies (using modern uv package manager)
-uv sync
+# Option A: Automated setup (recommended)
+./scripts/uv_setup
 
-# Or with pip
-pip install -r requirements.txt
+# Option B: Manual setup
+# Install uv if not present
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install all dependencies and dev tools
+uv sync --all-extras
+
+# Option C: Legacy pip setup (not recommended)
+# pip install -r requirements.txt
 ```
 
 ### 2. **Run the Test Suite**
 ```bash
 # Test Phase 3: Functional Integration
-python test_phase3.py
+uv run python test_phase3.py
 
 # Test Phase 4: Immutable State Management  
-python test_phase4.py
+uv run python test_phase4.py
 
 # Test Phase 5: Production Features
-python test_phase5_integration.py
+uv run python test_phase5_integration.py
+
+# Run full pytest suite
+uv run pytest
 ```
 
 ### 3. **Basic Usage Example**
@@ -218,7 +228,7 @@ final_stats = tracker.finish()
 ### **Unit Tests** (Pure Functions)
 ```bash
 # Test individual functions
-python -c "
+uv run python -c "
 from src.icloudpd.pure_functions import calculate_timeline_path
 from src.icloudpd.models import Photo
 # ... create test photo
@@ -230,9 +240,9 @@ print(f'Timeline path: {result}')
 ### **Integration Tests** (Service Composition)
 ```bash
 # Run existing integration tests
-python test_phase3.py   # Tests album filtering and media types
-python test_phase4.py   # Tests change detection and filtering  
-python test_phase5_integration.py  # Tests all production features
+uv run python test_phase3.py   # Tests album filtering and media types
+uv run python test_phase4.py   # Tests change detection and filtering  
+uv run python test_phase5_integration.py  # Tests all production features
 ```
 
 ### **Performance Tests** (Large Collections)

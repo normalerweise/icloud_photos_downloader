@@ -1,0 +1,143 @@
+name: Modern CI with uv
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: uv sync --all-extras
+    
+    - name: Lint with ruff
+      run: |
+        uv run ruff check --output-format=github .
+        uv run ruff format --check .
+    
+    - name: Type check with pyright
+      run: uv run pyright
+    
+    - name: Test with pytest
+      run: |
+        uv run pytest --cov=icloudpd --cov-report=xml --cov-report=term-missing
+    
+    - name: Test modern architecture phases
+      run: |
+        echo "Testing Phase 3: Functional Integration"
+        uv run python test_phase3.py
+        
+        echo "Testing Phase 4: State Management"
+        uv run python test_phase4.py
+        
+        echo "Testing Phase 5: Production Features"
+        uv run python test_phase5_integration.py
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: true
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+    
+    - name: Build package
+      run: |
+        uv build
+    
+    - name: Check package
+      run: |
+        uv run twine check dist/*
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+  performance-test:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+    
+    - name: Set up Python
+      run: uv python install 3.11
+    
+    - name: Install dependencies
+      run: uv sync --all-extras
+    
+    - name: Performance benchmark
+      run: |
+        echo "Running performance tests for large collections..."
+        uv run python -c "
+        from test_phase5_integration import create_large_test_collection, test_performance_optimization
+        import time
+        
+        print('Creating large test collection...')
+        large_collection = create_large_test_collection()
+        print(f'Created {len(large_collection)} photos')
+        
+        print('Running performance test...')
+        start_time = time.time()
+        test_performance_optimization()
+        elapsed = time.time() - start_time
+        
+        print(f'Performance test completed in {elapsed:.2f}s')
+        if elapsed > 60:
+            print('⚠️  Performance test took longer than expected')
+            exit(1)
+        else:
+            print('✅ Performance test passed')
+        "
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+    
+    - name: Security scan with safety
+      run: |
+        uv tool install safety
+        uv export --format requirements-txt --no-hashes | uv tool run safety check --stdin
+    
+    - name: Scan for secrets
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: main
+        head: HEAD

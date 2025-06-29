@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "Running mypy..."
-python3 -m mypy src tests --strict --python-version 3.9
-# --strict-equality --warn-return-any --disallow-any-generics --disallow-untyped-defs --disallow-untyped-calls --check-untyped-defs
+echo "Running pyright (modern type checker)..."
+uv run pyright src tests
+
+# Legacy mypy (commented out - replaced with pyright for modern type checking)
+# echo "Running mypy..."
+# python3 -m mypy src tests --strict --python-version 3.9

@@ -14,6 +14,6 @@ fi
 CURRENT_DIR=$(dirname "$0")
 ROOT_DIR="$(realpath $(dirname "$0")/..)"
 
-echo "Running tests with Python 3... (HTML coverage report)"
+echo "Running tests with uv... (HTML coverage report)"
 cd $ROOT_DIR
-python3 -m pytest --cov=icloudpd --cov-report html --cov-report term-missing --numprocesses $numprocesses
+uv run pytest --cov=icloudpd --cov-report html --cov-report term-missing --numprocesses $numprocesses
