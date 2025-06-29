@@ -39,8 +39,6 @@ class Config:
         no_progress_bar: bool,
         notification_script: str | None,
         threads_num: int,
-        delete_after_download: bool,
-        keep_icloud_recent_days: int | None,
         domain: str,
         watch_with_interval: int | None,
         dry_run: bool,
@@ -81,8 +79,6 @@ class Config:
         self.no_progress_bar = no_progress_bar
         self.notification_script = notification_script
         self.threads_num = threads_num
-        self.delete_after_download = delete_after_download
-        self.keep_icloud_recent_days = keep_icloud_recent_days
         self.domain = domain
         self.watch_with_interval = watch_with_interval
         self.dry_run = dry_run

@@ -19,8 +19,6 @@ import subprocess
 import sys
 import time
 import typing
-import urllib
-from functools import partial
 from logging import Logger
 from threading import Thread
 from typing import (
@@ -54,7 +52,6 @@ from pyicloud_ipd.base import PyiCloudService
 from pyicloud_ipd.exceptions import PyiCloudAPIResponseException
 from pyicloud_ipd.file_match import FileMatchPolicy
 from pyicloud_ipd.raw_policy import RawTreatmentPolicy
-from pyicloud_ipd.services.photos import PhotoAsset, PhotoLibrary, PhotosService
 from pyicloud_ipd.utils import (
     add_suffix_to_filename,
     disambiguate_filenames,
@@ -63,6 +60,7 @@ from pyicloud_ipd.utils import (
     store_password_in_keyring,
 )
 from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
+from pyicloud_ipd.services.photos import PhotoAsset, PhotoLibrary
 
 
 def build_filename_cleaner(
@@ -500,20 +498,6 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     default=1,
 )
 @click.option(
-    "--delete-after-download",
-    help="Delete the photo/video after download it."
-    + ' The deleted items will be appear in the "Recently Deleted".'
-    + " Therefore, should not combine with --auto-delete option.",
-    is_flag=True,
-)
-@click.option(
-    "--keep-icloud-recent-days",
-    help="Keep photos newer than this many days in iCloud. Deletes the rest. "
-    + "If set to 0, all photos will be deleted from iCloud.",
-    type=click.IntRange(0),
-    default=None,
-)
-@click.option(
     "--domain",
     help="What iCloud root domain to use. Use 'cn' for mainland China (default: 'com')",
     type=click.Choice(["com", "cn"]),
@@ -636,8 +620,6 @@ def main(
     no_progress_bar: bool,
     notification_script: str | None,
     threads_num: int,
-    delete_after_download: bool,
-    keep_icloud_recent_days: int | None,
     domain: str,
     watch_with_interval: int | None,
     dry_run: bool,
@@ -677,14 +659,8 @@ def main(
             print("--auth-only, --directory, --list-libraries or --list-albums are required")
             sys.exit(2)
 
-        if auto_delete and delete_after_download:
-            print("--auto-delete and --delete-after-download are mutually exclusive")
-            sys.exit(2)
-
-        if keep_icloud_recent_days and delete_after_download:
-            print(
-                "--keep-icloud-recent-days and --delete-after-download should not be used together."
-            )
+        if auto_delete and (list_albums or only_print_filenames):
+            print("--auto-delete is not compatible with --list_albums, --only_print_filenames")
             sys.exit(2)
 
         if watch_with_interval and (list_albums or only_print_filenames):  # pragma: no cover
@@ -753,8 +729,6 @@ def main(
             no_progress_bar=no_progress_bar,
             notification_script=notification_script,
             threads_num=threads_num,
-            delete_after_download=delete_after_download,
-            keep_icloud_recent_days=keep_icloud_recent_days,
             domain=domain,
             watch_with_interval=watch_with_interval,
             dry_run=dry_run,
@@ -830,8 +804,6 @@ def main(
             notification_email_from,
             no_progress_bar,
             notification_script,
-            delete_after_download,
-            keep_icloud_recent_days,
             domain,
             logger,
             watch_with_interval,
@@ -1082,55 +1054,6 @@ def download_builder(
     return state_
 
 
-def delete_photo(
-    logger: logging.Logger,
-    photo_service: PhotosService,
-    library_object: PhotoLibrary,
-    photo: PhotoAsset,
-) -> None:
-    """Delete a photo from the iCloud account."""
-    clean_filename_local = photo.filename
-    logger.debug("Deleting %s in iCloud...", clean_filename_local)
-    url = (
-        f"{library_object.service_endpoint}/records/modify?"
-        f"{urllib.parse.urlencode(photo_service.params)}"
-    )
-    post_data = json.dumps(
-        {
-            "atomic": True,
-            "desiredKeys": ["isDeleted"],
-            "operations": [
-                {
-                    "operationType": "update",
-                    "record": {
-                        "fields": {"isDeleted": {"value": 1}},
-                        "recordChangeTag": photo._asset_record["recordChangeTag"],
-                        "recordName": photo._asset_record["recordName"],
-                        "recordType": "CPLAsset",
-                    },
-                }
-            ],
-            "zoneID": library_object.zone_id,
-        }
-    )
-    photo_service.session.post(url, data=post_data, headers={"Content-type": "application/json"})
-    logger.info("Deleted %s in iCloud", clean_filename_local)
-
-
-def delete_photo_dry_run(
-    logger: logging.Logger,
-    _photo_service: PhotosService,
-    library_object: PhotoLibrary,
-    photo: PhotoAsset,
-) -> None:
-    """Dry run for deleting a photo from the iCloud"""
-    logger.info(
-        "[DRY RUN] Would delete %s in iCloud library %s",
-        photo.filename,
-        library_object.zone_id["zoneName"],
-    )
-
-
 RetrierT = TypeVar("RetrierT")
 
 
@@ -1226,8 +1149,6 @@ def core(
     notification_email_from: str | None,
     no_progress_bar: bool,
     notification_script: str | None,
-    delete_after_download: bool,
-    keep_icloud_recent_days: int | None,
     domain: str,
     logger: logging.Logger,
     watch_interval: int | None,
@@ -1413,38 +1334,8 @@ def core(
                         )
                         break
                     item = next(photos_iterator)
-                    should_delete = False
 
-                    if download_photo(consecutive_files_found, item) and delete_after_download:
-                        should_delete = True
-
-                    if keep_icloud_recent_days is not None:
-                        created_date = item.created.astimezone(get_localzone())
-                        age_days = (now - created_date).days
-                        logger.debug(f"Created date: {created_date}")
-                        logger.debug(f"Keep iCloud recent days: {keep_icloud_recent_days}")
-                        logger.debug(f"Age days: {age_days}")
-                        if age_days < keep_icloud_recent_days:
-                            logger.debug(
-                                "Skipping deletion of %s as it is within the keep_icloud_recent_days period (%d days old)",
-                                item.filename,
-                                age_days,
-                            )
-                        else:
-                            should_delete = True
-
-                    if should_delete:
-                        delete_local = partial(
-                            delete_photo_dry_run if dry_run else delete_photo,
-                            logger,
-                            icloud.photos,
-                            library_object,
-                            item,
-                        )
-
-                        retrier(delete_local, error_handler)
-                        if photos.direction != "DESCENDING":
-                            photos.increment_offset(-1)
+                    download_photo(consecutive_files_found, item)
 
                     photos_counter += 1
                     status_exchange.get_progress().photos_counter = photos_counter
