@@ -43,6 +43,13 @@ dependencies = [
     "srp==1.0.22",
 ]
 
+[project.urls]
+Homepage="https://github.com/icloud-photos-downloader/icloud_photos_downloader"
+
+[project.scripts]
+icloudpd = "icloudpd.base:main"
+icloud = "pyicloud_ipd.cmdline:main"
+
 [dependency-groups]
 doc = [
     "furo==2024.8.6",
@@ -82,12 +89,8 @@ test = [
     "types-waitress==3.0.1.20241117",
 ]
 
-[project.urls]
-Homepage="https://github.com/icloud-photos-downloader/icloud_photos_downloader"
-
-[project.scripts]
-icloudpd = "icloudpd.base:main"
-icloud = "pyicloud_ipd.cmdline:main"
+[tool.uv]
+default-groups = ["dev", "test"]
 
 [tool.pytest.ini_options]
 log_format = "%(levelname)-8s %(message)s"
