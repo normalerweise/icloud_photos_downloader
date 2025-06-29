@@ -1,0 +1,277 @@
+# Cursor Rules for iCloud Photos Downloader
+
+## Project Overview
+This is a CLI tool for downloading photos and videos from iCloud Photos. The project uses Python with Click for CLI, has comprehensive test coverage, and follows specific patterns for file matching, authentication, and download handling.
+
+## Code Structure & Architecture
+
+### Core Components
+- `src/icloudpd/base.py` - Main CLI entry point and orchestration
+- `src/icloudpd/download.py` - File download logic with retries and error handling
+- `src/icloudpd/authentication.py` - iCloud authentication and 2FA handling
+- `src/icloudpd/config.py` - Configuration management
+- `src/pyicloud_ipd/` - Core iCloud API client library
+- `tests/` - Comprehensive test suite with fixtures and mocks
+
+### Key Design Patterns
+- **Functional programming** with composition and currying (using `foundation` library)
+- **Builder pattern** for constructing download functions
+- **Strategy pattern** for file matching policies and authentication providers
+- **Retry pattern** with exponential backoff for network operations
+
+## Coding Standards
+
+### Python Style
+- Use **type hints** extensively for all function parameters and return values
+- Follow **PEP 8** with 4-space indentation
+- Use **f-strings** for string formatting
+- Prefer **list comprehensions** and **generator expressions** over explicit loops
+- Use **dataclasses** or **TypedDict** for structured data
+
+### Error Handling
+- Use **custom exceptions** for domain-specific errors
+- Implement **retry logic** with exponential backoff for network operations
+- Log errors with appropriate levels (DEBUG, INFO, ERROR)
+- Use **context managers** for resource management
+
+### Testing
+- Write **comprehensive tests** for all new functionality
+- Use **pytest** with fixtures and mocking
+- Test both **happy path** and **error scenarios**
+- Use **parameterized tests** for multiple input combinations
+- Mock external dependencies (iCloud API, file system)
+
+## File Matching Policies
+
+### Understanding File Match Policies
+The project has two file matching policies that control how files are named and deduplicated:
+
+1. **`name-size-dedup-with-suffix`** (default):
+   - Uses original filename from iCloud
+   - Performs deduplication based on file size
+   - Appends size suffix when conflicts occur
+   - Example: `IMG_7409.JPG` → `IMG_7409-1884695.JPG`
+
+2. **`name-id7`**:
+   - Uses original filename + 7-character asset ID suffix
+   - No deduplication - always downloads
+   - Guarantees unique filenames
+   - Example: `IMG_7409.JPG` → `IMG_7409_QVk2Yyt.JPG`
+
+### Why Original Filenames Are Preserved
+- **Human readability**: Original names provide context (IMG_, DSC_, Screenshot_, etc.)
+- **User experience**: Familiar naming conventions
+- **File organization**: Meaningful names help with sorting and browsing
+- **Backward compatibility**: Works with existing workflows
+
+## Authentication & Security
+
+### Authentication Flow
+- Supports multiple **password providers** (console, keyring, parameter, webui)
+- Handles **2FA/2SA** with multiple providers (console, webui)
+- Uses **session management** with automatic re-authentication
+- Implements **secure password storage** via system keyring
+
+### Security Considerations
+- Never log passwords or sensitive data
+- Use **environment variables** for credentials when possible
+- Implement **session timeout** and re-authentication
+- Handle **rate limiting** and throttling gracefully
+
+## CLI Design Patterns
+
+### Click Integration
+- Use **Click decorators** for CLI options and commands
+- Implement **callback functions** for option validation and transformation
+- Use **type converters** for complex parameter types
+- Provide **helpful error messages** and usage examples
+
+### Option Patterns
+- Use **sensible defaults** for most options
+- Provide **multiple choice options** with `click.Choice`
+- Implement **flag options** for boolean settings
+- Use **metavar** for better help text
+
+## File Operations
+
+### Download Logic
+- Implement **streaming downloads** for large files
+- Use **temporary files** with atomic renames
+- Set **file timestamps** to match creation dates
+- Handle **partial downloads** and resume capability
+
+### File System Operations
+- Use **pathlib** or **os.path** consistently
+- Create **directory hierarchies** safely with `os.makedirs`
+- Handle **file permissions** appropriately
+- Implement **atomic operations** where possible
+
+## Error Handling & Logging
+
+### Logging Strategy
+- Use **structured logging** with consistent format
+- Set appropriate **log levels** (DEBUG, INFO, ERROR)
+- Include **context information** in log messages
+- Use **truncation** for long paths in logs
+
+### Error Recovery
+- Implement **graceful degradation** when possible
+- Provide **clear error messages** to users
+- Use **exit codes** consistently (0=success, 1=error, 2=usage error)
+- Handle **network timeouts** and connection errors
+
+## Testing Guidelines
+
+### Test Structure
+- Use **descriptive test names** that explain the scenario
+- Group related tests in **test classes**
+- Use **fixtures** for common setup and teardown
+- Mock **external dependencies** consistently
+
+### Test Data
+- Use **realistic test data** that matches iCloud responses
+- Create **minimal test cases** that cover edge cases
+- Use **parameterized tests** for multiple scenarios
+- Maintain **test data files** in fixtures directory
+
+## Performance Considerations
+
+### Network Operations
+- Implement **connection pooling** for HTTP requests
+- Use **streaming responses** for large downloads
+- Implement **parallel downloads** where appropriate
+- Handle **rate limiting** and backoff strategies
+
+### Memory Management
+- Use **generators** for large datasets
+- Implement **lazy loading** for photo metadata
+- Avoid **loading entire files** into memory
+- Use **context managers** for resource cleanup
+
+## Documentation
+
+### Code Documentation
+- Write **docstrings** for all public functions and classes
+- Include **type information** in docstrings
+- Provide **usage examples** for complex functions
+- Document **error conditions** and handling
+
+### User Documentation
+- Keep **README.md** up to date with usage examples
+- Document **configuration options** clearly
+- Provide **troubleshooting guides** for common issues
+- Include **changelog** for version updates
+
+## Common Patterns to Follow
+
+### Function Signatures
+```python
+def function_name(
+    param1: str,
+    param2: Optional[int] = None,
+    *,
+    kwarg1: bool = False
+) -> ResultType:
+    """Brief description of function.
+    
+    Args:
+        param1: Description of parameter
+        param2: Optional parameter description
+        kwarg1: Keyword argument description
+        
+    Returns:
+        Description of return value
+        
+    Raises:
+        CustomError: When something goes wrong
+    """
+```
+
+### Error Handling Pattern
+```python
+try:
+    result = risky_operation()
+except SpecificError as e:
+    logger.error("Context: %s", str(e))
+    raise CustomError("User-friendly message") from e
+except Exception as e:
+    logger.exception("Unexpected error in operation")
+    raise
+```
+
+### Retry Pattern
+```python
+def retry_operation(max_retries: int = 3) -> Result:
+    for attempt in range(max_retries):
+        try:
+            return perform_operation()
+        except RetryableError as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(2 ** attempt)  # Exponential backoff
+```
+
+## Anti-Patterns to Avoid
+
+### Don't:
+- **Hardcode credentials** in source code
+- **Ignore exceptions** without logging
+- **Use global variables** for state management
+- **Mix concerns** in single functions
+- **Skip error handling** for network operations
+- **Use mutable default arguments**
+- **Log sensitive information**
+
+### Do:
+- **Use dependency injection** for external services
+- **Implement proper error handling** with specific exceptions
+- **Use configuration objects** for settings
+- **Write comprehensive tests** for new features
+- **Follow the existing patterns** in the codebase
+- **Document complex logic** with comments
+- **Use type hints** consistently
+
+## File Organization
+
+### Source Code Structure
+```
+src/
+├── icloudpd/           # Main application code
+│   ├── base.py        # CLI entry point
+│   ├── download.py    # Download logic
+│   ├── authentication.py
+│   └── config.py
+└── pyicloud_ipd/      # Core iCloud client library
+    ├── services/
+    ├── exceptions.py
+    └── utils.py
+```
+
+### Test Structure
+```
+tests/
+├── test_*.py          # Test modules
+├── fixtures/          # Test data and mocks
+└── conftest.py        # Pytest configuration
+```
+
+## When Adding New Features
+
+1. **Understand the existing patterns** in the codebase
+2. **Add comprehensive tests** before implementing
+3. **Follow the established naming conventions**
+4. **Use the existing error handling patterns**
+6. **Consider backward compatibility**
+7. **Update help text** for CLI options
+8. **Add appropriate logging** for debugging
+
+## When Fixing Bugs
+
+1. **Write a test** that reproduces the bug
+2. **Fix the root cause** rather than symptoms
+3. **Add logging** to help with future debugging
+4. **Update documentation** if behavior changes
+5. **Consider edge cases** that might be affected
+6. **Test the fix** thoroughly with existing test suite
+
+Remember: This project prioritizes **reliability**, **user experience**, and **maintainability** over raw performance. Always consider the impact on users when making changes. 
