@@ -9,6 +9,9 @@ from pathlib import Path
 
 import requests
 
+from icloudpd.new_download.database import PhotoAssetRecord
+from pyicloud_ipd.services.photos import PhotoAsset
+
 from .constants import MAX_CONCURRENT_DOWNLOADS, DOWNLOAD_TIMEOUT, RETRY_ATTEMPTS, RETRY_DELAY
 from .file_manager import FileManager
 
@@ -30,47 +33,43 @@ class DownloadManager:
             'User-Agent': 'icloudpd/1.0'
         })
     
-    def download_asset_versions(self, asset: Dict[str, Any], icloud_asset: Any) -> Tuple[List[str], List[str]]:
+    def download_asset_versions(
+        self,
+        asset: PhotoAssetRecord,
+        icloud_asset: PhotoAsset,
+        versions_to_download: List[str]
+    ) -> Tuple[List[str], List[str]]:
         """Download all available versions for an asset.
-        
+
         Args:
-            asset: Asset data from database
-            icloud_asset: iCloud asset object
-            
+            asset: PhotoAssetRecord from database
+            icloud_asset: PhotoAsset object from iCloud
+
         Returns:
             Tuple of (downloaded_versions, failed_versions)
         """
-        asset_id = asset['asset_id']
-        available_versions = asset.get('available_versions', [])
-        original_filename = asset['filename']
-        
-        downloaded_versions = []
-        failed_versions = []
-        
-        # Check what's already downloaded
-        existing_versions = self.file_manager.list_downloaded_files(asset_id)
-        
-        # Determine what needs to be downloaded
-        versions_to_download = [v for v in available_versions if v not in existing_versions]
-        
+        asset_id: str = asset.asset_id
+
         if not versions_to_download:
             logger.debug(f"All versions already downloaded for asset {asset_id}")
-            return existing_versions, failed_versions
-        
+            return [], []
+
         logger.info(f"Downloading {len(versions_to_download)} versions for asset {asset_id}")
-        
+
         # Download versions in parallel
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS) as executor:
             # Submit download tasks
-            future_to_version = {}
+            future_to_version: Dict[Any, str] = {}
             for version in versions_to_download:
                 future = executor.submit(
                     self._download_single_version,
-                    asset_id, version, original_filename, icloud_asset
+                    version, icloud_asset
                 )
                 future_to_version[future] = version
-            
+
             # Collect results
+            downloaded_versions: List[str] = []
+            failed_versions: List[str] = []
             for future in as_completed(future_to_version):
                 version = future_to_version[future]
                 try:
@@ -82,25 +81,21 @@ class DownloadManager:
                 except Exception as e:
                     logger.error(f"Download failed for asset {asset_id} version {version}: {e}")
                     failed_versions.append(version)
-        
-        # Combine with existing versions
-        all_downloaded = list(set(existing_versions + downloaded_versions))
-        
-        return all_downloaded, failed_versions
-    
-    def _download_single_version(self, asset_id: str, version: str, original_filename: str, 
-                                icloud_asset: Any) -> bool:
+
+        return downloaded_versions, failed_versions
+
+    def _download_single_version(self, version: str ,
+                                icloud_asset: PhotoAsset) -> bool:
         """Download a single version of an asset.
         
         Args:
-            asset_id: iCloud asset ID
             version: Version type to download
-            original_filename: Original filename from iCloud
             icloud_asset: iCloud asset object
             
         Returns:
             True if successful, False otherwise
         """
+        asset_id = icloud_asset.id
         for attempt in range(RETRY_ATTEMPTS):
             try:
                 # Get download URL for this version
@@ -108,9 +103,12 @@ class DownloadManager:
                 if not download_url:
                     logger.error(f"No download URL found for asset {asset_id} version {version}")
                     return False
+
+                file_path = self.file_manager.get_file_path(icloud_asset, version)
+
                 
                 # Download the file
-                success = self._download_from_url(download_url, asset_id, version, original_filename)
+                success = self._download_from_url(download_url, file_path, asset_id, version)
                 if success:
                     logger.debug(f"Successfully downloaded {version} for asset {asset_id}")
                     return True
@@ -142,15 +140,8 @@ class DownloadManager:
             # Try to get the specific version from asset.versions
             if hasattr(icloud_asset, 'versions') and icloud_asset.versions:
                 # Convert version string to AssetVersionSize enum
-                from pyicloud_ipd.version_size import AssetVersionSize
-                version_map = {
-                    'original': AssetVersionSize.ORIGINAL,
-                    'adjusted': AssetVersionSize.ADJUSTED,
-                    'alternative': AssetVersionSize.ALTERNATIVE,
-                    'medium': AssetVersionSize.MEDIUM,
-                    'thumb': AssetVersionSize.THUMB,
-                }
-                
+                from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
+                version_map = {e.name.lower(): e for e in list(AssetVersionSize) + list(LivePhotoVersionSize)}
                 if version in version_map:
                     version_enum = version_map[version]
                     if version_enum in icloud_asset.versions:
@@ -169,7 +160,8 @@ class DownloadManager:
         
         return None
     
-    def _download_from_url(self, url: str, asset_id: str, version: str, original_filename: str) -> bool:
+    # TODO: signature sucks -> 
+    def _download_from_url(self, url: str, file_path: Path, asset_id, version) -> bool:
         """Download file from URL.
         
         Args:
@@ -188,7 +180,7 @@ class DownloadManager:
             
             # Save file from stream
             success = self.file_manager.save_file_from_stream(
-                asset_id, version, original_filename, response.raw
+                file_path, response.raw
             )
             
             return success

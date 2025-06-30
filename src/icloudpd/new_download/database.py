@@ -5,8 +5,29 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, field
 
 from .constants import DATABASE_FILENAME
+
+
+@dataclass
+class PhotoAssetRecord:
+    asset_id: str
+    filename: str
+    asset_type: str | None
+    created_date: str | None
+    added_date: str | None
+    width: int | None
+    height: int | None
+    location_latitude: float | None
+    location_longitude: float | None
+    location_altitude: float | None
+    available_versions: List[str] = field(default_factory=list)
+    downloaded_versions: List[str] = field(default_factory=list)
+    failed_versions: List[str] = field(default_factory=list)
+    last_sync_date: str | None = None
+    master_record: Dict[str, Any] = field(default_factory=dict)
+    asset_record: Dict[str, Any] = field(default_factory=dict)
 
 
 class PhotoDatabase:
@@ -49,11 +70,11 @@ class PhotoDatabase:
             """)
             conn.commit()
     
-    def insert_asset(self, asset_data: Dict[str, Any]) -> None:
+    def insert_asset(self, asset_data: PhotoAssetRecord) -> None:
         """Insert a new photo asset into the database.
         
         Args:
-            asset_data: Dictionary containing asset information
+            asset_data: PhotoAssetRecord instance
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
@@ -64,33 +85,33 @@ class PhotoDatabase:
                     last_sync_date, master_record, asset_record
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                asset_data.get('asset_id'),
-                asset_data.get('filename'),
-                asset_data.get('asset_type'),
-                asset_data.get('created_date'),
-                asset_data.get('added_date'),
-                asset_data.get('width'),
-                asset_data.get('height'),
-                asset_data.get('location_latitude'),
-                asset_data.get('location_longitude'),
-                asset_data.get('location_altitude'),
-                json.dumps(asset_data.get('available_versions', [])),
-                json.dumps(asset_data.get('downloaded_versions', [])),
-                json.dumps(asset_data.get('failed_versions', [])),
+                asset_data.asset_id,
+                asset_data.filename,
+                asset_data.asset_type,
+                asset_data.created_date,
+                asset_data.added_date,
+                asset_data.width,
+                asset_data.height,
+                asset_data.location_latitude,
+                asset_data.location_longitude,
+                asset_data.location_altitude,
+                json.dumps(asset_data.available_versions),
+                json.dumps(asset_data.downloaded_versions),
+                json.dumps(asset_data.failed_versions),
                 datetime.now().isoformat(),
-                json.dumps(asset_data.get('master_record', {})),
-                json.dumps(asset_data.get('asset_record', {}))
+                json.dumps(asset_data.master_record),
+                json.dumps(asset_data.asset_record)
             ))
             conn.commit()
     
-    def get_asset(self, asset_id: str) -> Optional[Dict[str, Any]]:
+    def get_asset(self, asset_id: str) -> Optional[PhotoAssetRecord]:
         """Retrieve an asset from the database.
         
         Args:
             asset_id: The iCloud asset ID
             
         Returns:
-            Asset data dictionary or None if not found
+            PhotoAssetRecord or None if not found
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
@@ -111,7 +132,7 @@ class PhotoDatabase:
                 else:
                     asset_data[field] = [] if field.endswith('_versions') else {}
             
-            return asset_data
+            return PhotoAssetRecord(**asset_data)
     
     def update_download_status(self, asset_id: str, downloaded_versions: List[str], failed_versions: List[str]) -> None:
         """Update download status for an asset.
@@ -134,11 +155,11 @@ class PhotoDatabase:
             ))
             conn.commit()
     
-    def get_assets_needing_download(self) -> List[Dict[str, Any]]:
+    def get_assets_needing_download(self) -> List[PhotoAssetRecord]:
         """Get all assets that need downloading (not fully downloaded).
         
         Returns:
-            List of asset dictionaries that need downloading
+            List of PhotoAssetRecord that need downloading
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
@@ -160,7 +181,7 @@ class PhotoDatabase:
                     else:
                         asset_data[field] = [] if field.endswith('_versions') else {}
                 
-                assets.append(asset_data)
+                assets.append(PhotoAssetRecord(**asset_data))
             
             return assets
     

@@ -236,9 +236,25 @@ class PhotoLibrary(object):
 
         return typing.cast(Sequence[Dict[str, Any]], response['records'])
 
-    @property
-    def all(self) -> "PhotoAlbum":
-        return PhotoAlbum(self.service, self.service_endpoint, "", zone_id=self.zone_id, **self.WHOLE_COLLECTION) # type: ignore[arg-type] # dynamically builing params
+    def all(self, descending: bool = False) -> "PhotoAlbum":
+        """
+        Returns a PhotoAlbum representing all photos in the library.
+
+        Args:
+            descending: If True, enumerate in descending order. Default is ascending.
+
+        Returns:
+            PhotoAlbum: The album containing all photos.
+        """
+        collection = dict(self.WHOLE_COLLECTION)
+        collection["direction"] = "DESCENDING" if descending else "ASCENDING"
+        return PhotoAlbum(
+            self.service,
+            self.service_endpoint,
+            "",
+            zone_id=self.zone_id,
+            **collection
+        )  # type: ignore[arg-type] # dynamically building params
 
     @property
     def recently_deleted(self) -> "PhotoAlbum":
@@ -340,6 +356,12 @@ class PhotoAlbum(object):
         self.list_type = list_type
         self.obj_type = obj_type
         self.direction = direction
+
+        if zone_id:
+            self._zone_id: Dict[str, Any] = zone_id
+        else:
+            self._zone_id = {u'zoneName': u'PrimarySync'}
+
         if self.direction == "DESCENDING":
             self.offset = len(self) - 1
         else:
@@ -348,10 +370,7 @@ class PhotoAlbum(object):
         self.page_size = page_size
         self.exception_handler: Optional[Callable[[Exception, int], None]] = None
 
-        if zone_id:
-            self._zone_id: Dict[str, Any] = zone_id
-        else:
-            self._zone_id = {u'zoneName': u'PrimarySync'}
+
 
     @property
     def title(self) -> str:

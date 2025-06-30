@@ -5,13 +5,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Iterator
 
-from .database import PhotoDatabase
-from .asset_processor import AssetProcessor
+from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
+
+from .database import PhotoDatabase, PhotoAssetRecord
 from .file_manager import FileManager
 from .download_manager import DownloadManager
 
-logger = logging.getLogger(__name__)
+from pyicloud_ipd.services.photos import  PhotoAsset
 
+logger = logging.getLogger(__name__)
 
 class SyncManager:
     """Main orchestration class for downloading iCloud photos."""
@@ -27,18 +29,14 @@ class SyncManager:
         # Initialize components
         self.database = PhotoDatabase(self.base_directory)
         self.file_manager = FileManager(self.base_directory)
-        self.asset_processor = AssetProcessor(self.database)
+        self.mapper = PhotoAssetRecordMapper()
         self.download_manager = DownloadManager(self.file_manager)
     
-    def sync_photos(self, icloud_photos: Any, recent: Optional[int] = None,
-                   since: Optional[datetime] = None, until_found: Optional[int] = None) -> Dict[str, Any]:
+    def sync_photos(self, photos_to_sync: Iterator[PhotoAsset]) -> Dict[str, Any]:
         """Main sync method to download photos from iCloud.
         
         Args:
-            icloud_photos: iCloud photos collection
-            recent: Only download N most recent photos
-            since: Only download photos created since this date
-            until_found: Stop after finding N photos
+            photos_to_sync: Iterator of PhotoAsset objects to check/download (already filtered)
             
         Returns:
             Dictionary with sync statistics
@@ -56,50 +54,40 @@ class SyncManager:
         processed_count = 0
         found_count = 0
         
-        for asset in icloud_photos:
+        for asset in photos_to_sync:
             processed_count += 1
             
-            # Apply date filter
-            if since and asset.created and asset.created < since:
-                continue
-            
-            # Process the asset
-            asset_data = self.asset_processor.process_asset(asset)
-            
             # Check if we already have this asset in database
-            existing_asset = self.database.get_asset(asset_data['asset_id'])
-            if existing_asset:
-                # Update with latest information
-                asset_data['downloaded_versions'] = existing_asset.get('downloaded_versions', [])
-                asset_data['failed_versions'] = existing_asset.get('failed_versions', [])
-            
+            asset_record = self.database.get_asset(asset.id)
+            if asset_record:
+                asset_record = PhotoAssetRecordMapper.merge(asset_record, asset)
+            else:
+                asset_record = PhotoAssetRecordMapper.map(asset)
+
             # Insert/update in database
-            self.database.insert_asset(asset_data)
+            self.database.insert_asset(asset_record)
             
+            # TODO: logic is broken -> list_downloaded_files should not be aware of DOWNLOAD_VERSIONS this is part of versions to download determination
             # Check if asset needs downloading
-            existing_versions = self.file_manager.list_downloaded_files(asset_data['asset_id'])
-            available_versions = asset_data.get('available_versions', [])
-            versions_to_download = [v for v in available_versions if v not in existing_versions]
+            existing_versions = self.file_manager.list_downloaded_files(asset_record.asset_id)
+            available_versions = asset_record.available_versions
+            from icloudpd.new_download.constants import DOWNLOAD_VERSIONS
+            print(f"[DEBUG] asset_id={asset_record.asset_id} available_versions={available_versions} existing_versions={existing_versions}")
+            versions_to_download = [
+                v for v in DOWNLOAD_VERSIONS
+                if v in available_versions and v not in existing_versions
+            ]
+            print(f"[DEBUG] asset_id={asset_record.asset_id} versions_to_download={versions_to_download}")
             
             if versions_to_download:
                 # Download the asset
-                downloaded_versions, failed_versions = self.download_manager.download_asset_versions(asset_data, asset)
-                download_results[asset_data['asset_id']] = (downloaded_versions, failed_versions)
+                downloaded_versions, failed_versions = self.download_manager.download_asset_versions(asset_record, asset, versions_to_download)
+                download_results[asset_record.asset_id] = (downloaded_versions, failed_versions)
                 
                 # Update database with download results
-                self.database.update_download_status(asset_data['asset_id'], downloaded_versions, failed_versions)
+                self.database.update_download_status(asset_record.asset_id, downloaded_versions, failed_versions)
             
             found_count += 1
-            
-            # Check until_found limit
-            if until_found and found_count >= until_found:
-                logger.info(f"Stopping after finding {until_found} assets")
-                break
-            
-            # Check recent limit
-            if recent and processed_count >= recent:
-                logger.info(f"Stopping after processing {recent} most recent assets")
-                break
         
         logger.info(f"Processed {processed_count} assets, found {found_count} assets")
         
@@ -112,47 +100,7 @@ class SyncManager:
         
         return stats
     
-    def _download_assets(self, assets_to_download: List[Dict[str, Any]], 
-                        icloud_photos: Any) -> Dict[str, tuple]:
-        """Download assets in batches.
-        
-        Args:
-            assets_to_download: List of assets to download
-            icloud_photos: iCloud photos collection
-            
-        Returns:
-            Dictionary mapping asset_id to (downloaded_versions, failed_versions)
-        """
-        download_results = {}
-        
-        # Process assets in batches to avoid memory issues
-        batch_size = 10  # Process 10 assets at a time
-        
-        for i in range(0, len(assets_to_download), batch_size):
-            batch = assets_to_download[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1}/{(len(assets_to_download) + batch_size - 1)//batch_size}")
-            
-            # Get corresponding iCloud assets for this batch
-            batch_with_icloud_assets = []
-            for asset_data in batch:
-                try:
-                    # Find the asset in iCloud collection
-                    icloud_asset = self._find_icloud_asset(asset_data['asset_id'], icloud_photos)
-                    if icloud_asset:
-                        batch_with_icloud_assets.append((asset_data, icloud_asset))
-                    else:
-                        logger.warning(f"Could not find iCloud asset for {asset_data['asset_id']}")
-                        download_results[asset_data['asset_id']] = ([], ['not_found'])
-                except Exception as e:
-                    logger.error(f"Error finding iCloud asset for {asset_data['asset_id']}: {e}")
-                    download_results[asset_data['asset_id']] = ([], ['error'])
-            
-            if batch_with_icloud_assets:
-                # Download this batch
-                batch_results = self.download_manager.download_assets_batch(batch_with_icloud_assets)
-                download_results.update(batch_results)
-        
-        return download_results
+ 
     
     def _find_icloud_asset(self, asset_id: str, icloud_photos: Any) -> Optional[Any]:
         """Find an asset in the iCloud photos collection.

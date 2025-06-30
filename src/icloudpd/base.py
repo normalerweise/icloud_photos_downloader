@@ -811,29 +811,20 @@ def main(
 
             # Use new download architecture
             from icloudpd.new_download.sync_manager import SyncManager
-            base_dir = Path(directory) if directory else Path.cwd()
+            from icloudpd.new_download.sync_work import RecentPhotosStrategy, SinceDateStrategy, NoOpStrategy
+            if not directory:
+                raise ValueError("Download directory must be specified with --directory")
+            base_dir = Path(directory)
             sync_manager = SyncManager(base_dir)
-            # Use the main iCloud photos collection (album support can be added later)
-            library_object = icloud.photos
-            # If album is specified, use that album
-            if album:
-                photos = library_object.albums[album]
+            # Select filter strategy
+            if recent is not None:
+                photos_to_sync = RecentPhotosStrategy(icloud.photos, recent)
+            elif skip_created_before is not None and isinstance(skip_created_before, datetime.datetime):
+                photos_to_sync = SinceDateStrategy(icloud.photos, skip_created_before)
             else:
-                photos = library_object.all
-            # List albums if requested
-            if list_albums:
-                albums = sync_manager.list_albums(library_object)
-                print("Albums:")
-                for album_info in albums:
-                    print(f"{album_info['name']} ({album_info['count']})")
-                sys.exit(0)
+                photos_to_sync = NoOpStrategy(icloud.photos)
             # Run sync
-            stats = sync_manager.sync_photos(
-                photos,
-                recent=recent,
-                since=skip_created_before if isinstance(skip_created_before, datetime.datetime) else None,
-                until_found=until_found,
-            )
+            stats = sync_manager.sync_photos(photos_to_sync.__iter__())
             print("Sync complete.")
             print(json.dumps(stats, indent=2))
             sys.exit(0)
