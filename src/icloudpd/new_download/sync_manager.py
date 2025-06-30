@@ -50,31 +50,58 @@ class SyncManager:
         if cleaned_count > 0:
             logger.info(f"Cleaned up {cleaned_count} incomplete downloads")
         
-        # Process and filter assets
-        logger.info("Processing iCloud assets...")
-        processed_assets = list(self.asset_processor.filter_assets(
-            icloud_photos, recent=recent, since=since, until_found=until_found
-        ))
+        # Process and download assets in the same pass
+        logger.info("Processing and downloading iCloud assets...")
+        download_results = {}
+        processed_count = 0
+        found_count = 0
         
-        logger.info(f"Processed {len(processed_assets)} assets")
+        for asset in icloud_photos:
+            processed_count += 1
+            
+            # Apply date filter
+            if since and asset.created and asset.created < since:
+                continue
+            
+            # Process the asset
+            asset_data = self.asset_processor.process_asset(asset)
+            
+            # Check if we already have this asset in database
+            existing_asset = self.database.get_asset(asset_data['asset_id'])
+            if existing_asset:
+                # Update with latest information
+                asset_data['downloaded_versions'] = existing_asset.get('downloaded_versions', [])
+                asset_data['failed_versions'] = existing_asset.get('failed_versions', [])
+            
+            # Insert/update in database
+            self.database.insert_asset(asset_data)
+            
+            # Check if asset needs downloading
+            existing_versions = self.file_manager.list_downloaded_files(asset_data['asset_id'])
+            available_versions = asset_data.get('available_versions', [])
+            versions_to_download = [v for v in available_versions if v not in existing_versions]
+            
+            if versions_to_download:
+                # Download the asset
+                downloaded_versions, failed_versions = self.download_manager.download_asset_versions(asset_data, asset)
+                download_results[asset_data['asset_id']] = (downloaded_versions, failed_versions)
+                
+                # Update database with download results
+                self.database.update_download_status(asset_data['asset_id'], downloaded_versions, failed_versions)
+            
+            found_count += 1
+            
+            # Check until_found limit
+            if until_found and found_count >= until_found:
+                logger.info(f"Stopping after finding {until_found} assets")
+                break
+            
+            # Check recent limit
+            if recent and processed_count >= recent:
+                logger.info(f"Stopping after processing {recent} most recent assets")
+                break
         
-        # Get assets that need downloading
-        assets_to_download = self.asset_processor.get_assets_for_download(
-            recent=recent, since=since, until_found=until_found
-        )
-        
-        logger.info(f"Found {len(assets_to_download)} assets needing download")
-        
-        if not assets_to_download:
-            logger.info("No assets need downloading")
-            return self._get_sync_stats()
-        
-        # Download assets
-        logger.info("Starting downloads...")
-        download_results = self._download_assets(assets_to_download, icloud_photos)
-        
-        # Update database with download results
-        self._update_download_status(download_results)
+        logger.info(f"Processed {processed_count} assets, found {found_count} assets")
         
         # Get final statistics
         stats = self._get_sync_stats()

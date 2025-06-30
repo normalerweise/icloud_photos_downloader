@@ -133,17 +133,28 @@ class DownloadManager:
         
         Args:
             icloud_asset: iCloud asset object
-            version: Version type
+            version: Version type (string like "original", "adjusted", etc.)
             
         Returns:
             Download URL or None if not found
         """
         try:
-            # Try to get the specific version
+            # Try to get the specific version from asset.versions
             if hasattr(icloud_asset, 'versions') and icloud_asset.versions:
-                for asset_version in icloud_asset.versions:
-                    if asset_version.type == version:
-                        return asset_version.url
+                # Convert version string to AssetVersionSize enum
+                from pyicloud_ipd.version_size import AssetVersionSize
+                version_map = {
+                    'original': AssetVersionSize.ORIGINAL,
+                    'adjusted': AssetVersionSize.ADJUSTED,
+                    'alternative': AssetVersionSize.ALTERNATIVE,
+                    'medium': AssetVersionSize.MEDIUM,
+                    'thumb': AssetVersionSize.THUMB,
+                }
+                
+                if version in version_map:
+                    version_enum = version_map[version]
+                    if version_enum in icloud_asset.versions:
+                        return icloud_asset.versions[version_enum].url
             
             # Fallback to main asset URL for original version
             if version == 'original' and hasattr(icloud_asset, 'url'):

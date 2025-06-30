@@ -24,3 +24,5 @@ node_modules/
 /package-lock.json
 # used for local troubleshooting
 .photos
+
+test_library/

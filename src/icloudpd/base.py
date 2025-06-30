@@ -20,6 +20,7 @@ import sys
 import time
 import typing
 from logging import Logger
+from pathlib import Path
 from threading import Thread
 from typing import (
     Callable,
@@ -587,6 +588,12 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     is_eager=True,
     callback=report_version,
 )
+@click.option(
+    "--new-arch",
+    help="Use the new download architecture (EXPERIMENTAL)",
+    is_flag=True,
+    default=False,
+)
 def main(
     directory: str | None,
     username: str,
@@ -631,6 +638,7 @@ def main(
     mfa_provider: MFAProvider,
     use_os_locale: bool,
     skip_created_before: datetime.datetime | datetime.timedelta | None,
+    new_arch: bool,
 ) -> NoReturn:
     """Download all iCloud photos to a local directory"""
 
@@ -760,6 +768,75 @@ def main(
         if mfa_provider == MFAProvider.WEBUI:
             server_thread = Thread(target=serve_app, daemon=True, args=[logger, status_exchange])
             server_thread.start()
+
+        if new_arch:
+            # Authenticate and get icloud.photos
+            try:
+                icloud = authenticator(
+                    logger,
+                    domain,
+                    filename_cleaner,
+                    lp_filename_generator,
+                    raw_policy,
+                    file_match_policy,
+                    password_providers,
+                    mfa_provider,
+                    status_exchange,
+                )(
+                    username,
+                    cookie_directory,
+                    smtp_username is not None or notification_email is not None or notification_script is not None,
+                    os.environ.get("CLIENT_ID"),
+                )
+            except TwoStepAuthRequiredError:
+                if notification_script is not None:
+                    subprocess.call([notification_script])
+                if smtp_username is not None or notification_email is not None:
+                    send_2sa_notification(
+                        logger,
+                        username,
+                        smtp_username,
+                        smtp_password,
+                        smtp_host,
+                        smtp_port,
+                        smtp_no_tls,
+                        notification_email,
+                        notification_email_from,
+                    )
+                sys.exit(1)
+
+            if auth_only:
+                logger.info("Authentication completed successfully")
+                sys.exit(0)
+
+            # Use new download architecture
+            from icloudpd.new_download.sync_manager import SyncManager
+            base_dir = Path(directory) if directory else Path.cwd()
+            sync_manager = SyncManager(base_dir)
+            # Use the main iCloud photos collection (album support can be added later)
+            library_object = icloud.photos
+            # If album is specified, use that album
+            if album:
+                photos = library_object.albums[album]
+            else:
+                photos = library_object.all
+            # List albums if requested
+            if list_albums:
+                albums = sync_manager.list_albums(library_object)
+                print("Albums:")
+                for album_info in albums:
+                    print(f"{album_info['name']} ({album_info['count']})")
+                sys.exit(0)
+            # Run sync
+            stats = sync_manager.sync_photos(
+                photos,
+                recent=recent,
+                since=skip_created_before if isinstance(skip_created_before, datetime.datetime) else None,
+                until_found=until_found,
+            )
+            print("Sync complete.")
+            print(json.dumps(stats, indent=2))
+            sys.exit(0)
 
         result = core(
             download_builder(

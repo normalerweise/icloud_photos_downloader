@@ -5,6 +5,8 @@ import os
 import shutil
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+import re
+import base64
 
 from .constants import DATA_DIRECTORY, DOWNLOAD_VERSIONS
 
@@ -39,11 +41,13 @@ class FileManager:
         Returns:
             Path where the file should be saved
         """
+        # Encode asset_id as URL-safe base64, strip padding
+        safe_asset_id = base64.urlsafe_b64encode(asset_id.encode()).decode().rstrip('=')
         # Get file extension from original filename
         extension = Path(original_filename).suffix.lower()
         
-        # Generate filename: asset_id-version.extension
-        filename = f"{asset_id}-{version}{extension}"
+        # Generate filename: base64(asset_id)-version.extension
+        filename = f"{safe_asset_id}-{version}{extension}"
         
         return self.data_directory / filename
     

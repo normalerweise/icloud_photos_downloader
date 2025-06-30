@@ -37,12 +37,12 @@ class AssetProcessor:
             'filename': asset.filename,
             'asset_type': self._determine_asset_type(asset),
             'created_date': asset.created,
-            'added_date': asset.added,
+            'added_date': asset.added_date,
             'width': asset.dimensions[0] if asset.dimensions else None,
             'height': asset.dimensions[1] if asset.dimensions else None,
-            'location_latitude': asset.location.lat if asset.location else None,
-            'location_longitude': asset.location.lng if asset.location else None,
-            'location_altitude': asset.location.altitude if asset.location else None,
+            'location_latitude': self._extract_location_latitude(asset),
+            'location_longitude': self._extract_location_longitude(asset),
+            'location_altitude': self._extract_location_altitude(asset),
             'available_versions': self._get_available_versions(asset),
             'downloaded_versions': [],
             'failed_versions': [],
@@ -85,11 +85,14 @@ class AssetProcessor:
         """
         available_versions = []
         
-        # Check for original version
+        # Check for available versions
         if hasattr(asset, 'versions') and asset.versions:
-            for version in asset.versions:
-                if version.type in DOWNLOAD_VERSIONS:
-                    available_versions.append(version.type)
+            # asset.versions is a Dict[VersionSize, AssetVersion]
+            for version_size, asset_version in asset.versions.items():
+                # Convert enum to string (e.g., AssetVersionSize.ORIGINAL -> "original")
+                version_name = version_size.value if hasattr(version_size, 'value') else str(version_size)
+                if version_name in DOWNLOAD_VERSIONS:
+                    available_versions.append(version_name)
         
         # If no versions found, assume original is available
         if not available_versions:
@@ -136,6 +139,60 @@ class AssetProcessor:
                 asset_record = asset.asset_record.copy()
         
         return asset_record
+    
+    def _extract_location_latitude(self, asset: Any) -> Optional[float]:
+        """Extract latitude from asset records.
+        
+        Args:
+            asset: iCloud asset object
+            
+        Returns:
+            Latitude value or None if not available
+        """
+        try:
+            if hasattr(asset, '_master_record') and asset._master_record:
+                fields = asset._master_record.get('fields', {})
+                if 'locationLatitude' in fields:
+                    return float(fields['locationLatitude']['value'])
+        except (KeyError, ValueError, TypeError):
+            pass
+        return None
+    
+    def _extract_location_longitude(self, asset: Any) -> Optional[float]:
+        """Extract longitude from asset records.
+        
+        Args:
+            asset: iCloud asset object
+            
+        Returns:
+            Longitude value or None if not available
+        """
+        try:
+            if hasattr(asset, '_master_record') and asset._master_record:
+                fields = asset._master_record.get('fields', {})
+                if 'locationLongitude' in fields:
+                    return float(fields['locationLongitude']['value'])
+        except (KeyError, ValueError, TypeError):
+            pass
+        return None
+    
+    def _extract_location_altitude(self, asset: Any) -> Optional[float]:
+        """Extract altitude from asset records.
+        
+        Args:
+            asset: iCloud asset object
+            
+        Returns:
+            Altitude value or None if not available
+        """
+        try:
+            if hasattr(asset, '_master_record') and asset._master_record:
+                fields = asset._master_record.get('fields', {})
+                if 'locationAltitude' in fields:
+                    return float(fields['locationAltitude']['value'])
+        except (KeyError, ValueError, TypeError):
+            pass
+        return None
     
     def filter_assets(self, assets: Iterator[Any], recent: Optional[int] = None, 
                      since: Optional[datetime] = None, until_found: Optional[int] = None) -> Iterator[Dict[str, Any]]:
