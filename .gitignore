@@ -26,3 +26,4 @@ node_modules/
 .photos
 
 test_library/
+.vscode/launch.json

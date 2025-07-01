@@ -1,0 +1,21 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug icloudpd CLI (program)",
+            "type": "python",
+            "request": "launch",
+            "module": "starters.icloudpd",
+            "args": [
+                "--username", "<enter your username here>",
+                "--directory", "<enter your directory here>",
+                "--new-arch",
+                "--recent", "5"
+            ],
+            "console": "integratedTerminal",
+
+        }
+    ]
+} 
