@@ -75,7 +75,7 @@ class SyncManager:
             print(f"[DEBUG] asset_id={asset_record.asset_id} available_versions={available_versions} existing_versions={existing_versions}")
             versions_to_download = [
                 v for v in DOWNLOAD_VERSIONS
-                if v in available_versions and v not in existing_versions
+                if v.value in available_versions and v not in existing_versions
             ]
             print(f"[DEBUG] asset_id={asset_record.asset_id} versions_to_download={versions_to_download}")
             

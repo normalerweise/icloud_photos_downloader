@@ -17,10 +17,10 @@ DATA_DIRECTORY = "_data"
 
 # Version types to download
 DOWNLOAD_VERSIONS = [
-    AssetVersionSize.ORIGINAL.value,
-    LivePhotoVersionSize.ORIGINAL.value,
-    AssetVersionSize.ADJUSTED.value,
-    AssetVersionSize.ALTERNATIVE.value,
+    AssetVersionSize.ORIGINAL,
+    LivePhotoVersionSize.ORIGINAL,
+    AssetVersionSize.ADJUSTED,
+    AssetVersionSize.ALTERNATIVE,
 ]
 
 # Supported file extensions for live photos

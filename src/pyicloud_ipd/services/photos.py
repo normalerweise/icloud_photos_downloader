@@ -808,6 +808,7 @@ class PhotoAsset(object):
                     type_entry = f.get('%sFileType' % prefix)
                     if type_entry:
                         version['type'] = type_entry['value']
+                        version["file_extension"] = self.ITEM_TYPE_EXTENSIONS[version["type"]]
                     else:
                         raise ValueError(f"Expected {prefix}FileType, but missing it")
                         # version['type'] = None
@@ -825,8 +826,15 @@ class PhotoAsset(object):
                     if key in self.VERSION_FILENAME_SUFFIX_LOOKUP:
                         _size_suffix = self.VERSION_FILENAME_SUFFIX_LOOKUP[key]
                         version["filename"] = add_suffix_to_filename(f"-{_size_suffix}", version["filename"])
+                    
 
-                    _versions[key] = AssetVersion(version["filename"], version['size'], version['url'], version['type'])
+                    _versions[key] = AssetVersion(
+                        filename=version["filename"],
+                        size=version["size"],
+                        url=version["url"],
+                        type=version["type"],
+                        file_extension=version["file_extension"]
+                    )
 
             # swap original & alternative according to swap_raw_policy
             if AssetVersionSize.ALTERNATIVE in _versions and (("raw" in _versions[AssetVersionSize.ALTERNATIVE].type and self._service.raw_policy == RawTreatmentPolicy.AS_ORIGINAL) or ("raw" in _versions[AssetVersionSize.ORIGINAL].type and self._service.raw_policy == RawTreatmentPolicy.AS_ALTERNATIVE)):

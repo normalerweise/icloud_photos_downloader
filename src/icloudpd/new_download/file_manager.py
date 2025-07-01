@@ -9,6 +9,7 @@ import re
 import base64
 
 from pyicloud_ipd.services.photos import PhotoAsset
+from pyicloud_ipd.version_size import VersionSize
 
 from .constants import DATA_DIRECTORY, DOWNLOAD_VERSIONS
 
@@ -32,7 +33,7 @@ class FileManager:
         """Ensure required directories exist."""
         self.data_directory.mkdir(parents=True, exist_ok=True)
     
-    def get_file_path(self, icloud_asset: PhotoAsset, version: str) -> Path:
+    def get_file_path(self, icloud_asset: PhotoAsset, version: VersionSize) -> Path:
         """Generate file path for an asset version.
         
         Args:
@@ -45,14 +46,16 @@ class FileManager:
         # Encode asset_id as URL-safe base64, strip padding
         safe_asset_id = base64.urlsafe_b64encode(icloud_asset.id.encode()).decode().rstrip('=')
         # Get file extension from original filename
-        extension = icloud_asset.item_type_extension.lower()
+        version_data = icloud_asset.versions[version]
+        extension = version_data.file_extension.lower()
+        size_indicator = version.value
         
         # Generate filename: base64(asset_id)-version.extension
-        filename = f"{safe_asset_id}-{version}.{extension}"
+        filename = f"{safe_asset_id}-{size_indicator}.{extension}"
         
         return self.data_directory / filename
     
-    def file_exists(self, icloud_asset: PhotoAsset, version: str) -> bool:
+    def file_exists(self, icloud_asset: PhotoAsset, version: VersionSize) -> bool:
         """Check if a file already exists.
         
         Args:
@@ -66,7 +69,7 @@ class FileManager:
         file_path = self.get_file_path(icloud_asset, version)
         return file_path.exists()
     
-    def save_file(self, icloud_asset: PhotoAsset, version: str, 
+    def save_file(self, icloud_asset: PhotoAsset, version: VersionSize, 
                   content: bytes, overwrite: bool = False) -> bool:
         """Save file content to disk.
         
@@ -147,7 +150,7 @@ class FileManager:
                 temp_path.unlink()
             return False
     
-    def delete_file(self, icloud_asset: PhotoAsset, version: str) -> bool:
+    def delete_file(self, icloud_asset: PhotoAsset, version: VersionSize) -> bool:
         """Delete a file.
         
         Args:
@@ -170,7 +173,7 @@ class FileManager:
             logger.error(f"Failed to delete file {file_path}: {e}")
             return False
     
-    def get_file_size(self, icloud_asset: PhotoAsset, version: str) -> Optional[int]:
+    def get_file_size(self, icloud_asset: PhotoAsset, version: VersionSize) -> Optional[int]:
         """Get file size in bytes.
         
         Args:
