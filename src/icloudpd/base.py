@@ -53,6 +53,7 @@ from pyicloud_ipd.base import PyiCloudService
 from pyicloud_ipd.exceptions import PyiCloudAPIResponseException
 from pyicloud_ipd.file_match import FileMatchPolicy
 from pyicloud_ipd.raw_policy import RawTreatmentPolicy
+from pyicloud_ipd.services.photos import PhotoAsset, PhotoLibrary
 from pyicloud_ipd.utils import (
     add_suffix_to_filename,
     disambiguate_filenames,
@@ -61,7 +62,6 @@ from pyicloud_ipd.utils import (
     store_password_in_keyring,
 )
 from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
-from pyicloud_ipd.services.photos import PhotoAsset, PhotoLibrary
 
 
 def build_filename_cleaner(
@@ -271,6 +271,7 @@ def locale_setter(_ctx: click.Context, _param: click.Parameter, use_os_locale: b
     # set locale
     if use_os_locale:
         import locale
+
         locale.setlocale(locale.LC_ALL, "")
     return use_os_locale
 
@@ -332,7 +333,6 @@ RetrierT = TypeVar("RetrierT")
     "previously downloaded consecutive photos (default: download all photos)",
     type=click.IntRange(0),
 )
-
 @click.option(
     "-l",
     "--list-albums",
@@ -669,7 +669,9 @@ def main(
             )(
                 username,
                 cookie_directory,
-                smtp_username is not None or notification_email is not None or notification_script is not None,
+                smtp_username is not None
+                or notification_email is not None
+                or notification_script is not None,
                 os.environ.get("CLIENT_ID"),
             )
         except TwoStepAuthRequiredError:
@@ -695,7 +697,12 @@ def main(
 
         # Use new download architecture
         from icloudpd.new_download.sync_manager import SyncManager
-        from icloudpd.new_download.sync_work import RecentPhotosStrategy, SinceDateStrategy, NoOpStrategy
+        from icloudpd.new_download.sync_work import (
+            NoOpStrategy,
+            RecentPhotosStrategy,
+            SinceDateStrategy,
+        )
+
         if not directory:
             raise ValueError("Download directory must be specified with --directory")
         base_dir = Path(directory)
@@ -1218,7 +1225,7 @@ def core(
             )
             photos_counter = 0
 
-            now = datetime.datetime.now(get_localzone())
+            # now = datetime.datetime.now(get_localzone())
             photos_iterator = iter(photos_enumerator)
             while True:
                 try:

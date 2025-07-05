@@ -3,7 +3,6 @@
 # Download configuration
 from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
 
-
 MAX_CONCURRENT_DOWNLOADS = 5
 DOWNLOAD_TIMEOUT = 30  # seconds
 RETRY_ATTEMPTS = 3

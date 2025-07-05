@@ -1,11 +1,9 @@
 import datetime
 import glob
 import inspect
-import logging
 import os
 import shutil
-from typing import Any, NoReturn
-from unittest import TestCase, mock
+from unittest import TestCase
 
 import pytest
 import pytz
@@ -13,11 +11,7 @@ from click.testing import CliRunner
 from tzlocal import get_localzone
 from vcr import VCR
 
-from icloudpd import constants
 from icloudpd.base import main
-from pyicloud_ipd.base import PyiCloudService
-from pyicloud_ipd.exceptions import PyiCloudAPIResponseException
-from pyicloud_ipd.services.photos import PhotoAsset, PhotoLibrary, PhotosService
 from tests.helpers import path_from_project_root, print_result_exception, recreate_path
 
 vcr = VCR(decode_compressed_response=True, record_mode="none")
@@ -30,8 +24,6 @@ class AutodeletePhotosTestCase(TestCase):
         self.root_path = path_from_project_root(__file__)
         self.fixtures_path = os.path.join(self.root_path, "fixtures")
         self.vcr_path = os.path.join(self.root_path, "vcr_cassettes")
-
-   
 
     def test_autodelete_photos(self) -> None:
         base_dir = os.path.join(self.fixtures_path, inspect.stack()[0][3])

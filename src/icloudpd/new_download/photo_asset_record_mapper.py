@@ -1,19 +1,18 @@
 """Asset processing and filtering logic."""
 
 import logging
-from datetime import datetime
-from typing import Dict, List, Any, Optional, Iterator
-from pathlib import Path
+from typing import List
 
-from .constants import DOWNLOAD_VERSIONS
-from .database import PhotoDatabase, PhotoAssetRecord
 from pyicloud_ipd.services.photos import PhotoAsset
+
+from .database import PhotoAssetRecord
 
 logger = logging.getLogger(__name__)
 
 
 class PhotoAssetRecordMapper:
     """Maps a PhotoAsset to a PhotoAssetRecord for database storage."""
+
     @staticmethod
     def map(asset: PhotoAsset) -> PhotoAssetRecord:
         return PhotoAssetRecord(
@@ -24,9 +23,9 @@ class PhotoAssetRecordMapper:
             added_date=asset.added_date.isoformat() if asset.added_date else None,
             width=asset.dimensions[0] if asset.dimensions else None,
             height=asset.dimensions[1] if asset.dimensions else None,
-            location_latitude=None, # TODO: later -> not contained in icloud metadata? read from exif data later?
-            location_longitude=None, # TODO: later -> not contained in icloud metadata? read from exif data later?
-            location_altitude=None, # TODO: later -> not contained in icloud metadata? read from exif data later?
+            location_latitude=None,  # TODO: later -> not contained in icloud metadata? read from exif data later?
+            location_longitude=None,  # TODO: later -> not contained in icloud metadata? read from exif data later?
+            location_altitude=None,  # TODO: later -> not contained in icloud metadata? read from exif data later?
             available_versions=PhotoAssetRecordMapper._get_available_versions(asset),
             downloaded_versions=[],
             failed_versions=[],
@@ -51,10 +50,8 @@ class PhotoAssetRecordMapper:
             downloaded_versions=record.downloaded_versions,
             failed_versions=record.failed_versions,
             master_record=asset._master_record,
-            asset_record=asset._asset_record
+            asset_record=asset._asset_record,
         )
-
-
 
     @staticmethod
     def _get_available_versions(asset: PhotoAsset) -> List[str]:
