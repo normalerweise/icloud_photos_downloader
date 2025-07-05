@@ -145,9 +145,6 @@ def mfa_provider_generator(
 
 def ask_password_in_console(_user: str) -> str | None:
     return typing.cast(str | None, click.prompt("iCloud Password", hide_input=True))
-    # return getpass.getpass(
-    #         f'iCloud Password for {_user}:'
-    #     )
 
 
 def get_password_from_webui(
@@ -172,29 +169,23 @@ def get_password_from_webui(
                 logger.error("Internal error: did not get password for SUPPLIED_PASSWORD status")
                 status_exchange.replace_status(
                     Status.CHECKING_PASSWORD, Status.NO_INPUT_NEEDED
-                )  # TODO Error
+                )
                 return None
             return password
 
-        return None  # TODO
+        logger.error("Failed to transition to CHECKING_PASSWORD status")
+        return None
 
     return _intern
 
 
 def update_password_status_in_webui(status_exchange: StatusExchange) -> Callable[[str, str], None]:
     def _intern(_u: str, _p: str) -> None:
-        # TODO we are not handling wrong passwords...
+        # Note: Wrong password handling is not implemented yet
         status_exchange.replace_status(Status.CHECKING_PASSWORD, Status.NO_INPUT_NEEDED)
         return None
 
     return _intern
-
-
-# def get_click_param_by_name(_name: str, _params: List[Parameter]) -> Optional[Parameter]:
-#     _with_password = [_p for _p in _params if _name in _p.name]
-#     if len(_with_password) == 0:
-#         return None
-#     return _with_password[0]
 
 
 def dummy_password_writter(_u: str, _p: str) -> None:
@@ -263,10 +254,6 @@ def skip_created_before_generator(
     return parse_timestamp_or_timedelta(formatted)
 
 
-def ensure_tzinfo(tz: datetime.tzinfo, input: datetime.datetime) -> datetime.datetime:
-    return input.replace(tzinfo=tz)
-
-
 def locale_setter(_ctx: click.Context, _param: click.Parameter, use_os_locale: bool) -> bool:
     # set locale
     if use_os_locale:
@@ -309,7 +296,6 @@ RetrierT = TypeVar("RetrierT")
     "--password",
     help="Your iCloud password (default: use PyiCloud keyring or prompt for password)",
     metavar="<password>",
-    # is_eager=True,
 )
 @click.option(
     "--auth-only",
@@ -1225,7 +1211,6 @@ def core(
             )
             photos_counter = 0
 
-            # now = datetime.datetime.now(get_localzone())
             photos_iterator = iter(photos_enumerator)
             while True:
                 try:
