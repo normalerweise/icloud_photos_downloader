@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from .constants import DATABASE_FILENAME
 
-
+# TODO: Rework database columns to -> store asset_id in base64 to map file names more easily, store local file names per version explicitly, store version metadata from icloud explicitly, subtype -> e.g. live photo,.
 @dataclass
 class PhotoAssetRecord:
     asset_id: str

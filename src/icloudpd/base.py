@@ -205,8 +205,8 @@ def keyring_password_writter(logger: Logger) -> Callable[[str, str], None]:
     def _intern(username: str, password: str) -> None:
         try:
             store_password_in_keyring(username, password)
-        except Exception:
-            logger.warning("Password was not saved to keyring")
+        except Exception as e:
+            logger.error(f"Failed to store password in keyring: {e}")
 
     return _intern
 
@@ -215,23 +215,20 @@ def password_provider_generator(
     _ctx: click.Context, _param: click.Parameter, providers: Sequence[str]
 ) -> Dict[str, Tuple[Callable[[str], str | None], Callable[[str, str], None]]]:
     def _map(provider: str) -> Tuple[Callable[[str], str | None], Callable[[str, str], None]]:
-        if provider == "webui":
-            return (ask_password_in_console, dummy_password_writter)
         if provider == "console":
             return (ask_password_in_console, dummy_password_writter)
         elif provider == "keyring":
+            # We'll inject the logger later in the main function
             return (get_password_from_keyring, dummy_password_writter)
         elif provider == "parameter":
-            # TODO get from parameter
-            # _param: Optional[Parameter] = get_click_param_by_name("password", _ctx.command.params)
-            # if _param:
-            #     _password: str = _param.consume_value(_ctx, {})
-            #     return constant(_password)
             return (constant(None), dummy_password_writter)
+        elif provider == "webui":
+            # We'll inject the logger and status_exchange later in the main function
+            return (ask_password_in_console, dummy_password_writter)
         else:
-            raise ValueError(f"password provider was given an unsupported value of '{provider}'")
+            raise ValueError(f"password provider has unsupported value of '{provider}'")
 
-    return dict([(_s, _map(_s)) for _s in providers])
+    return {provider: _map(provider) for provider in providers}
 
 
 def lp_size_generator(
@@ -261,44 +258,34 @@ def file_match_policy_generator(
 def skip_created_before_generator(
     _ctx: click.Context, _param: click.Parameter, formatted: str
 ) -> datetime.datetime | datetime.timedelta | None:
-    if formatted is None:
+    if not formatted:
         return None
-    result = parse_timestamp_or_timedelta(formatted)
-    if result is None:
-        raise ValueError(
-            "--skip-created-before parameter did not parse ISO timestamp or interval successfully"
-        )
-    if isinstance(result, datetime.datetime):
-        return ensure_tzinfo(get_localzone(), result)
-    return result
+    return parse_timestamp_or_timedelta(formatted)
 
 
 def ensure_tzinfo(tz: datetime.tzinfo, input: datetime.datetime) -> datetime.datetime:
-    if input.tzinfo is None:
-        return input.astimezone(tz)
-    return input
+    return input.replace(tzinfo=tz)
 
 
 def locale_setter(_ctx: click.Context, _param: click.Parameter, use_os_locale: bool) -> bool:
     # set locale
     if use_os_locale:
-        from locale import LC_ALL, setlocale
-
-        setlocale(LC_ALL, "")
+        import locale
+        locale.setlocale(locale.LC_ALL, "")
     return use_os_locale
 
 
 def report_version(ctx: click.Context, _param: click.Parameter, value: bool) -> bool:
-    if not value:
+    if not value or ctx.resilient_parsing:
         return value
     vi = foundation.version_info_formatted()
     click.echo(vi)
     ctx.exit()
 
 
-# Must import the constants object so that we can mock values in tests.
+CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
-CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+RetrierT = TypeVar("RetrierT")
 
 
 @click.command(context_settings=CONTEXT_SETTINGS, options_metavar="<options>", no_args_is_help=True)
@@ -335,23 +322,6 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     default="~/.pyicloud",
 )
 @click.option(
-    "--size",
-    help="Image size to download. `medium` and `thumb` will always be added as suffixes to filenames, `adjusted` and `alternative` only if conflicting, `original` - never. If `adjusted` or `alternative` specified and is missing, then `original` is used.",
-    type=click.Choice(["original", "medium", "thumb", "adjusted", "alternative"]),
-    default=["original"],
-    multiple=True,
-    show_default=True,
-    callback=size_generator,
-)
-@click.option(
-    "--live-photo-size",
-    help="Live Photo video size to download",
-    type=click.Choice(["original", "medium", "thumb"]),
-    default="original",
-    show_default=True,
-    callback=lp_size_generator,
-)
-@click.option(
     "--recent",
     help="Number of recent photos to download (default: download all photos)",
     type=click.IntRange(0),
@@ -362,12 +332,7 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     "previously downloaded consecutive photos (default: download all photos)",
     type=click.IntRange(0),
 )
-@click.option(
-    "-a",
-    "--album",
-    help="Album to download or whole collection if not specified",
-    metavar="<album>",
-)
+
 @click.option(
     "-l",
     "--list-albums",
@@ -386,24 +351,8 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     is_flag=True,
 )
 @click.option(
-    "--skip-videos",
-    help="Don't download any videos (default: Download all photos and videos)",
-    is_flag=True,
-)
-@click.option(
-    "--skip-live-photos",
-    help="Don't download any live photos (default: Download live photos)",
-    is_flag=True,
-)
-@click.option(
     "--xmp-sidecar",
     help="Export additional data as XMP sidecar files (default: don't export)",
-    is_flag=True,
-)
-@click.option(
-    "--force-size",
-    help="Only download the requested size (`adjusted` and `alternate` will not be forced)"
-    + "(default: download original if size is not available)",
     is_flag=True,
 )
 @click.option(
@@ -418,13 +367,6 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     "(not including files that are already downloaded.)"
     + "(Does not download or delete any files.)",
     is_flag=True,
-)
-@click.option(
-    "--folder-structure",
-    help="Folder structure (default: {:%Y/%m/%d}). "
-    "If set to 'none' all photos will just be placed into the download directory",
-    metavar="<folder_structure>",
-    default="{:%Y/%m/%d}",
 )
 @click.option(
     "--set-exif-datetime",
@@ -493,12 +435,6 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     is_flag=True,
 )
 @click.option(
-    "--threads-num",
-    help="Number of cpu threads - deprecated & always 1. To be removed in future version",
-    type=click.IntRange(1),
-    default=1,
-)
-@click.option(
     "--domain",
     help="What iCloud root domain to use. Use 'cn' for mainland China (default: 'com')",
     type=click.Choice(["com", "cn"]),
@@ -524,23 +460,6 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     callback=build_filename_cleaner,
 )
 @click.option(
-    "--live-photo-mov-filename-policy",
-    "lp_filename_generator",
-    help="How to produce filenames for video portion of live photos: `suffix` will add _HEVC suffix and `original` will keep filename as it is.",
-    type=click.Choice(["suffix", "original"], case_sensitive=False),
-    default="suffix",
-    callback=build_lp_filename_generator,
-)
-@click.option(
-    "--align-raw",
-    "raw_policy",
-    help="For photo assets with raw and jpeg, treat raw always in the specified size: `original` (raw+jpeg), `alternative` (jpeg+raw), or unchanged (as-is). It matters when choosing sizes to download",
-    type=click.Choice(["as-is", "original", "alternative"], case_sensitive=False),
-    default="as-is",
-    show_default=True,
-    callback=raw_policy_generator,
-)
-@click.option(
     "--password-provider",
     "password_providers",
     help="Specifies passwords provider to check in the specified order",
@@ -549,15 +468,6 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     show_default=True,
     multiple=True,
     callback=password_provider_generator,
-)
-@click.option(
-    "--file-match-policy",
-    "file_match_policy",
-    help="Policy to identify existing files and de-duplicate. `name-size-dedup-with-suffix` appends file size to deduplicate. `name-id7` adds asset id from iCloud to all file names and does not de-duplicate.",
-    type=click.Choice(["name-size-dedup-with-suffix", "name-id7"], case_sensitive=False),
-    default="name-size-dedup-with-suffix",
-    show_default=True,
-    callback=file_match_policy_generator,
 )
 @click.option(
     "--mfa-provider",
@@ -588,33 +498,20 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
     is_eager=True,
     callback=report_version,
 )
-@click.option(
-    "--new-arch",
-    help="Use the new download architecture (EXPERIMENTAL)",
-    is_flag=True,
-    default=False,
-)
 def main(
     directory: str | None,
     username: str,
     password: str | None,
     auth_only: bool,
     cookie_directory: str,
-    size: Sequence[AssetVersionSize],
-    live_photo_size: LivePhotoVersionSize,
     recent: int | None,
     until_found: int | None,
-    album: str | None,
     list_albums: bool,
     library: str,
     list_libraries: bool,
-    skip_videos: bool,
-    skip_live_photos: bool,
     xmp_sidecar: bool,
-    force_size: bool,
     auto_delete: bool,
     only_print_filenames: bool,
-    folder_structure: str,
     set_exif_datetime: bool,
     smtp_username: str | None,
     smtp_password: str | None,
@@ -626,19 +523,14 @@ def main(
     log_level: str,
     no_progress_bar: bool,
     notification_script: str | None,
-    threads_num: int,
     domain: str,
     watch_with_interval: int | None,
     dry_run: bool,
     filename_cleaner: Callable[[str], str],
-    lp_filename_generator: Callable[[str], str],
-    raw_policy: RawTreatmentPolicy,
     password_providers: Dict[str, Tuple[Callable[[str], str | None], Callable[[str, str], None]]],
-    file_match_policy: FileMatchPolicy,
     mfa_provider: MFAProvider,
     use_os_locale: bool,
     skip_created_before: datetime.datetime | datetime.timedelta | None,
-    new_arch: bool,
 ) -> NoReturn:
     """Download all iCloud photos to a local directory"""
 
@@ -698,34 +590,27 @@ def main(
             print("Webui must be the last --password-provider")
             sys.exit(2)
 
-        if folder_structure != "none":
-            try:
-                folder_structure.format(datetime.datetime.now())
-            except:  # noqa E722
-                print("Format specified in --folder-structure is incorrect")
-                sys.exit(2)
-
         status_exchange = StatusExchange()
         config = Config(
             directory=directory,
             username=username,
             auth_only=auth_only,
             cookie_directory=cookie_directory,
-            primary_sizes=size,
-            live_photo_size=live_photo_size,
+            primary_sizes=[AssetVersionSize.ORIGINAL],  # Fixed for new architecture
+            live_photo_size=LivePhotoVersionSize.ORIGINAL,  # Fixed for new architecture
             recent=recent,
             until_found=until_found,
-            album=album,
+            album=None,  # Fixed for new architecture - not supported yet
             list_albums=list_albums,
             library=library,
             list_libraries=list_libraries,
-            skip_videos=skip_videos,
-            skip_live_photos=skip_live_photos,
+            skip_videos=False,  # Fixed for new architecture
+            skip_live_photos=False,  # Fixed for new architecture
             xmp_sidecar=xmp_sidecar,
-            force_size=force_size,
+            force_size=False,  # Fixed for new architecture
             auto_delete=auto_delete,
             only_print_filenames=only_print_filenames,
-            folder_structure=folder_structure,
+            folder_structure="{:%Y/%m/%d}",  # Fixed for new architecture
             set_exif_datetime=set_exif_datetime,
             smtp_username=smtp_username,
             smtp_host=smtp_host,
@@ -736,13 +621,13 @@ def main(
             log_level=log_level,
             no_progress_bar=no_progress_bar,
             notification_script=notification_script,
-            threads_num=threads_num,
+            threads_num=1,  # Fixed for new architecture
             domain=domain,
             watch_with_interval=watch_with_interval,
             dry_run=dry_run,
-            raw_policy=raw_policy,
+            raw_policy=RawTreatmentPolicy.AS_IS,  # Fixed for new architecture
             password_providers=password_providers,
-            file_match_policy=file_match_policy,
+            file_match_policy=FileMatchPolicy.NAME_SIZE_DEDUP_WITH_SUFFIX,  # Fixed for new architecture
             mfa_provider=mfa_provider,
             use_os_locale=use_os_locale,
         )
@@ -769,122 +654,64 @@ def main(
             server_thread = Thread(target=serve_app, daemon=True, args=[logger, status_exchange])
             server_thread.start()
 
-        if new_arch:
-            # Authenticate and get icloud.photos
-            try:
-                icloud = authenticator(
+        # Authenticate and get icloud.photos
+        try:
+            icloud = authenticator(
+                logger,
+                domain,
+                filename_cleaner,
+                lambda x: x + ".MOV",  # Fixed live photo naming for new architecture
+                RawTreatmentPolicy.AS_IS,  # Fixed for new architecture
+                FileMatchPolicy.NAME_SIZE_DEDUP_WITH_SUFFIX,  # Fixed for new architecture
+                password_providers,
+                mfa_provider,
+                status_exchange,
+            )(
+                username,
+                cookie_directory,
+                smtp_username is not None or notification_email is not None or notification_script is not None,
+                os.environ.get("CLIENT_ID"),
+            )
+        except TwoStepAuthRequiredError:
+            if notification_script is not None:
+                subprocess.call([notification_script])
+            if smtp_username is not None or notification_email is not None:
+                send_2sa_notification(
                     logger,
-                    domain,
-                    filename_cleaner,
-                    lp_filename_generator,
-                    raw_policy,
-                    file_match_policy,
-                    password_providers,
-                    mfa_provider,
-                    status_exchange,
-                )(
                     username,
-                    cookie_directory,
-                    smtp_username is not None or notification_email is not None or notification_script is not None,
-                    os.environ.get("CLIENT_ID"),
+                    smtp_username,
+                    smtp_password,
+                    smtp_host,
+                    smtp_port,
+                    smtp_no_tls,
+                    notification_email,
+                    notification_email_from,
                 )
-            except TwoStepAuthRequiredError:
-                if notification_script is not None:
-                    subprocess.call([notification_script])
-                if smtp_username is not None or notification_email is not None:
-                    send_2sa_notification(
-                        logger,
-                        username,
-                        smtp_username,
-                        smtp_password,
-                        smtp_host,
-                        smtp_port,
-                        smtp_no_tls,
-                        notification_email,
-                        notification_email_from,
-                    )
-                sys.exit(1)
+            sys.exit(1)
 
-            if auth_only:
-                logger.info("Authentication completed successfully")
-                sys.exit(0)
-
-            # Use new download architecture
-            from icloudpd.new_download.sync_manager import SyncManager
-            from icloudpd.new_download.sync_work import RecentPhotosStrategy, SinceDateStrategy, NoOpStrategy
-            if not directory:
-                raise ValueError("Download directory must be specified with --directory")
-            base_dir = Path(directory)
-            sync_manager = SyncManager(base_dir)
-            # Select filter strategy
-            if recent is not None:
-                photos_to_sync = RecentPhotosStrategy(icloud.photos, recent)
-            elif skip_created_before is not None and isinstance(skip_created_before, datetime.datetime):
-                photos_to_sync = SinceDateStrategy(icloud.photos, skip_created_before)
-            else:
-                photos_to_sync = NoOpStrategy(icloud.photos)
-            # Run sync
-            stats = sync_manager.sync_photos(photos_to_sync.__iter__())
-            print("Sync complete.")
-            print(json.dumps(stats, indent=2))
+        if auth_only:
+            logger.info("Authentication completed successfully")
             sys.exit(0)
 
-        result = core(
-            download_builder(
-                logger,
-                skip_videos,
-                folder_structure,
-                directory,
-                size,
-                force_size,
-                only_print_filenames,
-                set_exif_datetime,
-                skip_live_photos,
-                live_photo_size,
-                dry_run,
-                file_match_policy,
-                xmp_sidecar,
-                skip_created_before,
-            )
-            if directory is not None
-            else (lambda _s: lambda _c, _p: False),
-            directory,
-            username,
-            auth_only,
-            cookie_directory,
-            size,
-            recent,
-            until_found,
-            album,
-            list_albums,
-            library,
-            list_libraries,
-            skip_videos,
-            auto_delete,
-            only_print_filenames,
-            folder_structure,
-            smtp_username,
-            smtp_password,
-            smtp_host,
-            smtp_port,
-            smtp_no_tls,
-            notification_email,
-            notification_email_from,
-            no_progress_bar,
-            notification_script,
-            domain,
-            logger,
-            watch_with_interval,
-            dry_run,
-            filename_cleaner,
-            lp_filename_generator,
-            raw_policy,
-            file_match_policy,
-            password_providers,
-            mfa_provider,
-            status_exchange,
-        )
-        sys.exit(result)
+        # Use new download architecture
+        from icloudpd.new_download.sync_manager import SyncManager
+        from icloudpd.new_download.sync_work import RecentPhotosStrategy, SinceDateStrategy, NoOpStrategy
+        if not directory:
+            raise ValueError("Download directory must be specified with --directory")
+        base_dir = Path(directory)
+        sync_manager = SyncManager(base_dir)
+        # Select filter strategy
+        if recent is not None:
+            photos_to_sync = RecentPhotosStrategy(icloud.photos, recent)
+        elif skip_created_before is not None and isinstance(skip_created_before, datetime.datetime):
+            photos_to_sync = SinceDateStrategy(icloud.photos, skip_created_before)
+        else:
+            photos_to_sync = NoOpStrategy(icloud.photos)
+        # Run sync
+        stats = sync_manager.sync_photos(photos_to_sync.__iter__())
+        print("Sync complete.")
+        print(json.dumps(stats, indent=2))
+        sys.exit(0)
 
 
 def download_builder(
@@ -1303,7 +1130,7 @@ def core(
             return 1
 
         while True:
-            photos = library_object.albums[album] if album else library_object.all
+            photos = library_object.albums[album] if album else library_object.all()
 
             if list_albums:
                 print("Albums:")
