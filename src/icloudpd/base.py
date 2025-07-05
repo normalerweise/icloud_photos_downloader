@@ -181,7 +181,7 @@ def get_password_from_webui(
 
 def update_password_status_in_webui(status_exchange: StatusExchange) -> Callable[[str, str], None]:
     def _intern(_u: str, _p: str) -> None:
-        # Note: Wrong password handling is not implemented yet
+        # TODO we are not handling wrong passwords...
         status_exchange.replace_status(Status.CHECKING_PASSWORD, Status.NO_INPUT_NEEDED)
         return None
 
@@ -251,7 +251,17 @@ def skip_created_before_generator(
 ) -> datetime.datetime | datetime.timedelta | None:
     if not formatted:
         return None
-    return parse_timestamp_or_timedelta(formatted)
+    result = parse_timestamp_or_timedelta(formatted)
+    if result is None:
+        raise ValueError(
+            "--skip-created-before parameter did not parse ISO timestamp or interval successfully"
+        )
+    if isinstance(result, datetime.datetime):
+        # Ensure datetime has timezone info for proper comparison in SinceDateStrategy
+        if result.tzinfo is None:
+            return result.replace(tzinfo=get_localzone())
+        return result
+    return result
 
 
 def locale_setter(_ctx: click.Context, _param: click.Parameter, use_os_locale: bool) -> bool:
@@ -277,13 +287,7 @@ RetrierT = TypeVar("RetrierT")
 
 
 @click.command(context_settings=CONTEXT_SETTINGS, options_metavar="<options>", no_args_is_help=True)
-@click.option(
-    "-d",
-    "--directory",
-    help="Local directory that should be used for download",
-    type=click.Path(exists=True),
-    metavar="<directory>",
-)
+# Authentication Options
 @click.option(
     "-u",
     "--username",
@@ -309,6 +313,38 @@ RetrierT = TypeVar("RetrierT")
     default="~/.pyicloud",
 )
 @click.option(
+    "--password-provider",
+    "password_providers",
+    help="Specifies passwords provider to check in the specified order",
+    type=click.Choice(["console", "keyring", "parameter", "webui"], case_sensitive=False),
+    default=["parameter", "keyring", "console"],
+    show_default=True,
+    multiple=True,
+    callback=password_provider_generator,
+)
+@click.option(
+    "--mfa-provider",
+    help="Specified where to get MFA code from",
+    type=click.Choice(["console", "webui"], case_sensitive=False),
+    default="console",
+    show_default=True,
+    callback=mfa_provider_generator,
+)
+@click.option(
+    "--domain",
+    help="What iCloud root domain to use. Use 'cn' for mainland China (default: 'com')",
+    type=click.Choice(["com", "cn"]),
+    default="com",
+)
+# Functional Options
+@click.option(
+    "-d",
+    "--directory",
+    help="Local directory that should be used for download",
+    type=click.Path(exists=True),
+    metavar="<directory>",
+)
+@click.option(
     "--recent",
     help="Number of recent photos to download (default: download all photos)",
     type=click.IntRange(0),
@@ -318,6 +354,11 @@ RetrierT = TypeVar("RetrierT")
     help="Download most recently added photos until we find x number of "
     "previously downloaded consecutive photos (default: download all photos)",
     type=click.IntRange(0),
+)
+@click.option(
+    "--skip-created-before",
+    help="Do not process assets created before specified timestamp in ISO format (2025-01-02) or interval from now (20d)",
+    callback=skip_created_before_generator,
 )
 @click.option(
     "-l",
@@ -358,6 +399,46 @@ RetrierT = TypeVar("RetrierT")
     "--set-exif-datetime",
     help="Write the DateTimeOriginal exif tag from file creation date, " + "if it doesn't exist.",
     is_flag=True,
+)
+@click.option(
+    "--watch-with-interval",
+    help="Run downloading in a infinite cycle, waiting specified seconds between runs",
+    type=click.IntRange(1),
+)
+@click.option(
+    "--dry-run",
+    help="Do not modify local system or iCloud",
+    is_flag=True,
+    default=False,
+)
+# General Config Options
+@click.option(
+    "--log-level",
+    help="Log level (default: debug)",
+    type=click.Choice(["debug", "info", "error"]),
+    default="debug",
+)
+@click.option(
+    "--no-progress-bar",
+    help="Disables the one-line progress bar and prints log messages on separate lines "
+    "(Progress bar is disabled by default if there is no tty attached)",
+    is_flag=True,
+)
+@click.option(
+    "--use-os-locale",
+    help="Use locale of the host OS to format dates",
+    is_flag=True,
+    default=False,
+    is_eager=True,
+    callback=locale_setter,
+)
+@click.option(
+    "--keep-unicode-in-filenames",
+    "filename_cleaner",
+    help="Keep unicode chars in file names or remove non all ascii chars",
+    type=bool,
+    default=False,
+    callback=build_filename_cleaner,
 )
 @click.option(
     "--smtp-username",
@@ -407,74 +488,6 @@ RetrierT = TypeVar("RetrierT")
     type=click.Path(),
     help="Runs an external script when two factor authentication expires. "
     "(path required: /path/to/my/script.sh)",
-)
-@click.option(
-    "--log-level",
-    help="Log level (default: debug)",
-    type=click.Choice(["debug", "info", "error"]),
-    default="debug",
-)
-@click.option(
-    "--no-progress-bar",
-    help="Disables the one-line progress bar and prints log messages on separate lines "
-    "(Progress bar is disabled by default if there is no tty attached)",
-    is_flag=True,
-)
-@click.option(
-    "--domain",
-    help="What iCloud root domain to use. Use 'cn' for mainland China (default: 'com')",
-    type=click.Choice(["com", "cn"]),
-    default="com",
-)
-@click.option(
-    "--watch-with-interval",
-    help="Run downloading in a infinite cycle, waiting specified seconds between runs",
-    type=click.IntRange(1),
-)
-@click.option(
-    "--dry-run",
-    help="Do not modify local system or iCloud",
-    is_flag=True,
-    default=False,
-)
-@click.option(
-    "--keep-unicode-in-filenames",
-    "filename_cleaner",
-    help="Keep unicode chars in file names or remove non all ascii chars",
-    type=bool,
-    default=False,
-    callback=build_filename_cleaner,
-)
-@click.option(
-    "--password-provider",
-    "password_providers",
-    help="Specifies passwords provider to check in the specified order",
-    type=click.Choice(["console", "keyring", "parameter", "webui"], case_sensitive=False),
-    default=["parameter", "keyring", "console"],
-    show_default=True,
-    multiple=True,
-    callback=password_provider_generator,
-)
-@click.option(
-    "--mfa-provider",
-    help="Specified where to get MFA code from",
-    type=click.Choice(["console", "webui"], case_sensitive=False),
-    default="console",
-    show_default=True,
-    callback=mfa_provider_generator,
-)
-@click.option(
-    "--use-os-locale",
-    help="Use locale of the host OS to format dates",
-    is_flag=True,
-    default=False,
-    is_eager=True,
-    callback=locale_setter,
-)
-@click.option(
-    "--skip-created-before",
-    help="Do not process assets created before specified timestamp in ISO format (2025-01-02) or interval from now (20d)",
-    callback=skip_created_before_generator,
 )
 @click.option(
     "--version",
