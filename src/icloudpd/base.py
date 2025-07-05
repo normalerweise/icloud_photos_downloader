@@ -595,21 +595,14 @@ def main(
             username=username,
             auth_only=auth_only,
             cookie_directory=cookie_directory,
-            primary_sizes=[AssetVersionSize.ORIGINAL],  # Fixed for new architecture
-            live_photo_size=LivePhotoVersionSize.ORIGINAL,  # Fixed for new architecture
             recent=recent,
             until_found=until_found,
-            album=None,  # Fixed for new architecture - not supported yet
             list_albums=list_albums,
             library=library,
             list_libraries=list_libraries,
-            skip_videos=False,  # Fixed for new architecture
-            skip_live_photos=False,  # Fixed for new architecture
             xmp_sidecar=xmp_sidecar,
-            force_size=False,  # Fixed for new architecture
             auto_delete=auto_delete,
             only_print_filenames=only_print_filenames,
-            folder_structure="{:%Y/%m/%d}",  # Fixed for new architecture
             set_exif_datetime=set_exif_datetime,
             smtp_username=smtp_username,
             smtp_host=smtp_host,
@@ -620,13 +613,10 @@ def main(
             log_level=log_level,
             no_progress_bar=no_progress_bar,
             notification_script=notification_script,
-            threads_num=1,  # Fixed for new architecture
             domain=domain,
             watch_with_interval=watch_with_interval,
             dry_run=dry_run,
-            raw_policy=RawTreatmentPolicy.AS_IS,  # Fixed for new architecture
             password_providers=password_providers,
-            file_match_policy=FileMatchPolicy.NAME_SIZE_DEDUP_WITH_SUFFIX,  # Fixed for new architecture
             mfa_provider=mfa_provider,
             use_os_locale=use_os_locale,
         )
