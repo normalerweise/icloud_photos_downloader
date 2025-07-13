@@ -48,7 +48,7 @@ from pyicloud_ipd.utils import (
     get_password_from_keyring,
     store_password_in_keyring,
 )
-from pyicloud_ipd.version_size import AssetVersionSize, LivePhotoVersionSize
+from pyicloud_ipd.version_size import AssetVersionSize
 
 
 def build_filename_cleaner(
@@ -78,12 +78,6 @@ def lp_filename_original(filename: str) -> str:
     return name + ".MOV"
 
 
-def build_lp_filename_generator(
-    _ctx: click.Context, _param: click.Parameter, lp_filename_policy: str
-) -> Callable[[str], str]:
-    # redefining typed vars instead of using in ternary directly is a mypy hack
-    return lp_filename_original if lp_filename_policy == "original" else lp_filename_concatinator
-
 
 def raw_policy_generator(
     _ctx: click.Context, _param: click.Parameter, raw_policy: str
@@ -97,26 +91,6 @@ def raw_policy_generator(
         return RawTreatmentPolicy.AS_ALTERNATIVE
     else:
         raise ValueError(f"policy was provided with unsupported value of '{raw_policy}'")
-
-
-def size_generator(
-    _ctx: click.Context, _param: click.Parameter, sizes: Sequence[str]
-) -> Sequence[AssetVersionSize]:
-    def _map(size: str) -> AssetVersionSize:
-        if size == "original":
-            return AssetVersionSize.ORIGINAL
-        elif size == "adjusted":
-            return AssetVersionSize.ADJUSTED
-        elif size == "alternative":
-            return AssetVersionSize.ALTERNATIVE
-        elif size == "medium":
-            return AssetVersionSize.MEDIUM
-        elif size == "thumb":
-            return AssetVersionSize.THUMB
-        else:
-            raise ValueError(f"size was provided with unsupported value of '{size}'")
-
-    return [_map(_s) for _s in sizes]
 
 
 def mfa_provider_generator(
@@ -209,28 +183,6 @@ def password_provider_generator(
     return {provider: _map(provider) for provider in providers}
 
 
-def lp_size_generator(
-    _ctx: click.Context, _param: click.Parameter, size: str
-) -> LivePhotoVersionSize:
-    if size == "original":
-        return LivePhotoVersionSize.ORIGINAL
-    elif size == "medium":
-        return LivePhotoVersionSize.MEDIUM
-    elif size == "thumb":
-        return LivePhotoVersionSize.THUMB
-    else:
-        raise ValueError(f"size was provided with unsupported value of '{size}'")
-
-
-def file_match_policy_generator(
-    _ctx: click.Context, _param: click.Parameter, policy: str
-) -> FileMatchPolicy:
-    if policy == "name-size-dedup-with-suffix":
-        return FileMatchPolicy.NAME_SIZE_DEDUP_WITH_SUFFIX
-    elif policy == "name-id7":
-        return FileMatchPolicy.NAME_ID7
-    else:
-        raise ValueError(f"policy was provided with unsupported value of '{policy}'")
 
 
 def skip_created_before_generator(
