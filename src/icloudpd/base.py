@@ -643,7 +643,7 @@ def main(
         else:
             photos_to_sync = NoOpStrategy(icloud.photos)
         # Run sync
-        stats = sync_manager.sync_photos(photos_to_sync.__iter__())
+        stats = sync_manager.sync_photos(photos_to_sync)
         print("Sync complete.")
         print(json.dumps(stats, indent=2))
         sys.exit(0)

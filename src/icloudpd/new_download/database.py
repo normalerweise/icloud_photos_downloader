@@ -11,6 +11,13 @@ from typing import Any, Dict, List, Optional
 from .constants import DATABASE_FILENAME
 
 
+from enum import Enum
+from typing import NamedTuple
+
+class UpsertResult(Enum):
+    INSERTED = "inserted"
+    UPDATED = "updated"
+
 @dataclass
 class ICloudAssetRecord:
     """iCloud metadata for an asset (remote information)."""
@@ -26,6 +33,12 @@ class ICloudAssetRecord:
     master_record: Dict[str, Any] = field(default_factory=dict)
     asset_record: Dict[str, Any] = field(default_factory=dict)
     last_metadata_update: Optional[str] = None
+    metadata_inserted_date: Optional[str] = None
+
+
+class ICloudAssetUpsertResult(NamedTuple):
+    record: ICloudAssetRecord
+    operation: UpsertResult
 
 
 @dataclass
@@ -95,22 +108,8 @@ class PhotoDatabase:
                     asset_versions TEXT,
                     master_record TEXT,
                     asset_record TEXT,
-                    last_metadata_update DATETIME
-                )
-            """)
-
-            # Asset version metadata table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS asset_versions (
-                    asset_id TEXT,
-                    version_type TEXT,
-                    version_size TEXT,
-                    file_extension TEXT,
-                    file_size INTEGER,
-                    checksum TEXT,
-                    download_url TEXT,
-                    PRIMARY KEY (asset_id, version_type, version_size),
-                    FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
+                    last_metadata_update DATETIME,
+                    metadata_inserted_date DATETIME
                 )
             """)
 
@@ -146,7 +145,6 @@ class PhotoDatabase:
             # Create indexes for better performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_status ON sync_status(sync_status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_local_files_asset_id ON local_files(asset_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_asset_versions_asset_id ON asset_versions(asset_id)")
 
             conn.commit()
 
@@ -154,20 +152,43 @@ class PhotoDatabase:
         """Encode asset_id as URL-safe base64."""
         return base64.urlsafe_b64encode(asset_id.encode()).decode().rstrip("=")
 
-    def insert_icloud_metadata(self, metadata: ICloudAssetRecord) -> None:
+    def upsert_icloud_metadata(self, metadata: ICloudAssetRecord) -> ICloudAssetUpsertResult:
         """Insert or update iCloud metadata for an asset.
 
         Args:
-            metadata: ICloudAssetMetadata instance
+            metadata: ICloudAssetRecord instance with metadata_inserted_date set
+
+        Returns:
+            ICloudAssetUpsertResult with the record and operation type
         """
+        # Set the metadata_inserted_date if not already set
+        if metadata.metadata_inserted_date is None:
+            metadata.metadata_inserted_date = datetime.now().isoformat()
+        
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+            # Use ON CONFLICT DO UPDATE with RETURNING to get the result
+            cursor = conn.execute(
                 """
-                INSERT OR REPLACE INTO icloud_assets (
+                INSERT INTO icloud_assets (
                     asset_id, filename, asset_type, created_date, added_date,
                     width, height, asset_subtype, asset_versions,
-                    master_record, asset_record, last_metadata_update
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    master_record, asset_record, last_metadata_update, metadata_inserted_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    filename = excluded.filename,
+                    asset_type = excluded.asset_type,
+                    created_date = excluded.created_date,
+                    added_date = excluded.added_date,
+                    width = excluded.width,
+                    height = excluded.height,
+                    asset_subtype = excluded.asset_subtype,
+                    asset_versions = excluded.asset_versions,
+                    master_record = excluded.master_record,
+                    asset_record = excluded.asset_record,
+                    last_metadata_update = excluded.last_metadata_update
+                RETURNING asset_id, filename, asset_type, created_date, added_date,
+                          width, height, asset_subtype, asset_versions,
+                          master_record, asset_record, last_metadata_update, metadata_inserted_date
             """,
                 (
                     metadata.asset_id,
@@ -182,37 +203,39 @@ class PhotoDatabase:
                     json.dumps(metadata.master_record),
                     json.dumps(metadata.asset_record),
                     datetime.now().isoformat(),
+                    metadata.metadata_inserted_date,
                 ),
             )
+            
+            # Get the returned row
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("No row returned from upsert operation")
+            
+            # Parse the returned data
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            
+            # Parse JSON fields
+            for field in ["asset_versions", "master_record", "asset_record"]:
+                if data[field]:
+                    data[field] = json.loads(data[field])
+                else:
+                    data[field] = {}
+            
+            # Create the returned record
+            returned_record = ICloudAssetRecord(**data)
+            
+            # Determine if it was an insert or update by comparing metadata_inserted_date
+            if returned_record.metadata_inserted_date == metadata.metadata_inserted_date:
+                operation = UpsertResult.INSERTED
+            else:
+                operation = UpsertResult.UPDATED
+            
             conn.commit()
+            return ICloudAssetUpsertResult(record=returned_record, operation=operation)
 
-    def insert_asset_version(self, version: AssetVersionMetadata) -> None:
-        """Insert or update asset version metadata.
-
-        Args:
-            version: AssetVersionMetadata instance
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO asset_versions (
-                    asset_id, version_type, version_size, file_extension, file_size,
-                    checksum, download_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    version.asset_id,
-                    version.version_type,
-                    version.version_size,
-                    version.file_extension,
-                    version.file_size,
-                    version.checksum,
-                    version.download_url,
-                ),
-            )
-            conn.commit()
-
-    def insert_local_file(self, local_file: LocalFileRecord) -> None:
+    def upsert_local_file(self, local_file: LocalFileRecord) -> None:
         """Insert or update local file record.
 
         Args:
@@ -238,8 +261,8 @@ class PhotoDatabase:
             )
             conn.commit()
 
-    def update_sync_status(self, sync_status: SyncStatus) -> None:
-        """Update sync status for an asset.
+    def upsert_sync_status(self, sync_status: SyncStatus) -> None:
+        """Insert or update sync status for an asset.
 
         Args:
             sync_status: SyncStatus instance
@@ -292,29 +315,6 @@ class PhotoDatabase:
                     data[field] = {}
 
             return ICloudAssetRecord(**data)
-
-    def get_asset_versions(self, asset_id: str) -> List[AssetVersionMetadata]:
-        """Get all versions for an asset.
-
-        Args:
-            asset_id: The iCloud asset ID
-
-        Returns:
-            List of AssetVersionMetadata
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT * FROM asset_versions WHERE asset_id = ?",
-                (asset_id,),
-            )
-
-            versions = []
-            for row in cursor.fetchall():
-                columns = [desc[0] for desc in cursor.description]
-                data = dict(zip(columns, row, strict=False))
-                versions.append(AssetVersionMetadata(**data))
-
-            return versions
 
     def get_local_files(self, asset_id: str) -> List[LocalFileRecord]:
         """Get all local files for an asset.
@@ -408,12 +408,10 @@ class PhotoDatabase:
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT DISTINCT av.asset_id 
-                FROM asset_versions av
-                LEFT JOIN local_files lf ON av.asset_id = lf.asset_id 
-                    AND av.version_type = lf.version_type
-                LEFT JOIN sync_status ss ON av.asset_id = ss.asset_id 
-                    AND av.version_type = ss.version_type
+                SELECT DISTINCT ss.asset_id 
+                FROM sync_status ss
+                LEFT JOIN local_files lf ON ss.asset_id = lf.asset_id 
+                    AND ss.version_type = lf.version_type
                 WHERE lf.asset_id IS NULL
                   AND ss.sync_status = 'metadata_processed'
             """)
@@ -462,12 +460,10 @@ class PhotoDatabase:
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT COUNT(DISTINCT av.asset_id) 
-                FROM asset_versions av
-                LEFT JOIN local_files lf ON av.asset_id = lf.asset_id 
-                    AND av.version_type = lf.version_type
-                LEFT JOIN sync_status ss ON av.asset_id = ss.asset_id 
-                    AND av.version_type = ss.version_type
+                SELECT COUNT(DISTINCT ss.asset_id) 
+                FROM sync_status ss
+                LEFT JOIN local_files lf ON ss.asset_id = lf.asset_id 
+                    AND ss.version_type = lf.version_type
                 WHERE lf.asset_id IS NULL
                   AND ss.sync_status = 'metadata_processed'
             """)
@@ -487,7 +483,6 @@ class PhotoDatabase:
         if not metadata:
             return None
 
-        versions = self.get_asset_versions(asset_id)
         local_files = self.get_local_files(asset_id)
         sync_statuses = self.get_all_sync_statuses(asset_id)
 

@@ -2,12 +2,13 @@
 
 import base64
 import logging
+from datetime import datetime
 from typing import List, Dict, Any
 
 from pyicloud_ipd.services.photos import PhotoAsset
 from pyicloud_ipd.version_size import VersionSize
 
-from .database import ICloudAssetRecord, AssetVersionMetadata, SyncStatus
+from .database import ICloudAssetRecord, SyncStatus
 
 logger = logging.getLogger(__name__)
 
@@ -48,26 +49,10 @@ class PhotoAssetRecordMapper:
             asset_versions=asset_versions,
             master_record=asset._master_record,
             asset_record=asset._asset_record,
+            metadata_inserted_date=datetime.now().isoformat(),
         )
 
-    @staticmethod
-    def map_asset_versions(asset: PhotoAsset) -> List[AssetVersionMetadata]:
-        """Map PhotoAsset versions to AssetVersionMetadata list."""
-        versions = []
-        
-        for version_size in asset.versions:
-            version_data = asset.versions[version_size]
-            versions.append(AssetVersionMetadata(
-                asset_id=asset.id,
-                version_type=version_size.value,
-                version_size=version_size.value,
-                file_extension=version_data.file_extension.lower(),
-                file_size=version_data.size,  # AssetVersion has 'size' not 'file_size'
-                checksum=None,  # TODO: Calculate checksum if needed
-                download_url=None,  # Will be set when downloading
-            ))
-        
-        return versions
+
 
     @staticmethod
     def map_sync_statuses(asset: PhotoAsset) -> List[SyncStatus]:
@@ -105,46 +90,3 @@ class PhotoAssetRecordMapper:
                 return "panorama"
         
         return None
-
-    # Legacy compatibility method
-    @staticmethod
-    def map(asset: PhotoAsset) -> dict:
-        """Legacy method that returns combined data in old format."""
-        metadata = PhotoAssetRecordMapper.map_icloud_metadata(asset)
-        versions = PhotoAssetRecordMapper.map_asset_versions(asset)
-        sync_statuses = PhotoAssetRecordMapper.map_sync_statuses(asset)
-        
-        # Convert to old format for compatibility
-        available_versions = [f"{v.version_type}_{v.version_size}" for v in versions]
-        
-        # Determine overall sync status from individual statuses
-        overall_status = "pending"
-        if sync_statuses:
-            # If any status is failed, overall is failed
-            if any(s.sync_status == "failed" for s in sync_statuses):
-                overall_status = "failed"
-            # If all are completed, overall is completed
-            elif all(s.sync_status == "completed" for s in sync_statuses):
-                overall_status = "completed"
-            # If any are downloading, overall is downloading
-            elif any(s.sync_status == "downloading" for s in sync_statuses):
-                overall_status = "downloading"
-            # If any are metadata_processed, overall is metadata_processed
-            elif any(s.sync_status == "metadata_processed" for s in sync_statuses):
-                overall_status = "metadata_processed"
-
-        return {
-            "asset_id": metadata.asset_id,
-            "filename": metadata.filename,
-            "asset_type": metadata.asset_type,
-            "created_date": metadata.created_date,
-            "added_date": metadata.added_date,
-            "width": metadata.width,
-            "height": metadata.height,
-            "available_versions": available_versions,
-            "downloaded_versions": [],
-            "failed_versions": [],
-            "sync_status": overall_status,
-            "master_record": metadata.master_record,
-            "asset_record": metadata.asset_record,
-        }
