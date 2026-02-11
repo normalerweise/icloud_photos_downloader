@@ -78,7 +78,6 @@ def lp_filename_original(filename: str) -> str:
     return name + ".MOV"
 
 
-
 def raw_policy_generator(
     _ctx: click.Context, _param: click.Parameter, raw_policy: str
 ) -> RawTreatmentPolicy:
@@ -128,9 +127,7 @@ def get_password_from_webui(
             password = status_exchange.get_payload()
             if not password:
                 logger.error("Internal error: did not get password for SUPPLIED_PASSWORD status")
-                status_exchange.replace_status(
-                    Status.CHECKING_PASSWORD, Status.NO_INPUT_NEEDED
-                )
+                status_exchange.replace_status(Status.CHECKING_PASSWORD, Status.NO_INPUT_NEEDED)
                 return None
             return password
 
@@ -181,8 +178,6 @@ def password_provider_generator(
             raise ValueError(f"password provider has unsupported value of '{provider}'")
 
     return {provider: _map(provider) for provider in providers}
-
-
 
 
 def skip_created_before_generator(
@@ -625,7 +620,7 @@ def main(
 
         # Use new download architecture
         from icloudpd.new_download.sync_manager import SyncManager
-        from icloudpd.new_download.sync_work import (
+        from icloudpd.new_download.sync_strategy import (
             NoOpStrategy,
             RecentPhotosStrategy,
             SinceDateStrategy,

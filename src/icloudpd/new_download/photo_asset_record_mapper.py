@@ -3,10 +3,9 @@
 import base64
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List
 
 from pyicloud_ipd.services.photos import PhotoAsset
-from pyicloud_ipd.version_size import VersionSize
 
 from .database import ICloudAssetRecord, SyncStatus
 
@@ -26,7 +25,7 @@ class PhotoAssetRecordMapper:
         """Map PhotoAsset to ICloudAssetMetadata."""
         # Extract asset versions as dictionary with version_size as key
         asset_versions = {}
-        
+
         for version_size in asset.versions:
             version_data = asset.versions[version_size]
             asset_versions[version_size.value] = {
@@ -34,9 +33,9 @@ class PhotoAssetRecordMapper:
                 "size": version_data.size,
                 "url": version_data.url,
                 "type": version_data.type,
-                "file_extension": version_data.file_extension
+                "file_extension": version_data.file_extension,
             }
-        
+
         return ICloudAssetRecord(
             asset_id=asset.id,
             filename=asset.filename,
@@ -52,41 +51,41 @@ class PhotoAssetRecordMapper:
             metadata_inserted_date=datetime.now().isoformat(),
         )
 
-
-
     @staticmethod
     def map_sync_statuses(asset: PhotoAsset) -> List[SyncStatus]:
         """Map PhotoAsset to initial SyncStatus for each version."""
         statuses = []
         for version_size in asset.versions:
-            statuses.append(SyncStatus(
-                asset_id=asset.id,
-                version_type=version_size.value,
-                sync_status="pending",
-                retry_count=0,
-            ))
+            statuses.append(
+                SyncStatus(
+                    asset_id=asset.id,
+                    version_type=version_size.value,
+                    sync_status="pending",
+                    retry_count=0,
+                )
+            )
         return statuses
 
     @staticmethod
     def _determine_subtype(asset: PhotoAsset) -> str | None:
         """Determine asset subtype based on iCloud metadata."""
         # Check for live photo - look for video companion in versions
-        if any('VidCompl' in str(v) for v in asset.versions.keys()):
+        if any("VidCompl" in str(v) for v in asset.versions):
             return "live_photo"
-        
+
         # Check for burst - look in asset record fields
-        asset_fields = asset._asset_record.get('fields', {})
-        if 'burstId' in asset_fields and asset_fields['burstId'].get('value'):
+        asset_fields = asset._asset_record.get("fields", {})
+        if "burstId" in asset_fields and asset_fields["burstId"].get("value"):
             return "burst"
-        
+
         # Check for HDR - look in asset record fields
-        if 'assetHDRType' in asset_fields and asset_fields['assetHDRType'].get('value'):
+        if "assetHDRType" in asset_fields and asset_fields["assetHDRType"].get("value"):
             return "hdr"
-        
+
         # Check for panorama - look in asset record fields
-        if 'assetSubtype' in asset_fields:
-            subtype_value = asset_fields['assetSubtype'].get('value')
+        if "assetSubtype" in asset_fields:
+            subtype_value = asset_fields["assetSubtype"].get("value")
             if subtype_value == 3:  # Panorama subtype
                 return "panorama"
-        
+
         return None

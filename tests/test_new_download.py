@@ -1,174 +1,267 @@
 """Tests for the new download architecture."""
 
+import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
-from src.icloudpd.new_download.asset_processor import AssetProcessor
-from src.icloudpd.new_download.database import PhotoDatabase
-from src.icloudpd.new_download.file_manager import FileManager
-from src.icloudpd.new_download.sync_manager import SyncManager
+from icloudpd.new_download.database import (
+    ICloudAssetRecord,
+    LocalFileRecord,
+    PhotoDatabase,
+    SyncStatus,
+    UpsertResult,
+)
+from icloudpd.new_download.file_manager import FileManager
+from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
+from icloudpd.new_download.sync_manager import SyncManager
+from pyicloud_ipd.asset_version import AssetVersion
+from pyicloud_ipd.item_type import AssetItemType
+from pyicloud_ipd.version_size import AssetVersionSize
+
+
+def _make_mock_asset(
+    asset_id: str = "AYk6Y+tESR",
+    filename: str = "IMG_7409.JPG",
+) -> Mock:
+    """Create a mock PhotoAsset with realistic structure."""
+    mock = Mock()
+    mock.id = asset_id
+    mock.filename = filename
+    mock.item_type = AssetItemType.IMAGE
+    mock.item_type_extension = "JPG"
+    mock.created = datetime(2024, 1, 15, 10, 30, 0)
+    mock.added_date = datetime(2024, 1, 15, 10, 30, 0)
+    mock.asset_date = datetime(2024, 1, 15, 10, 30, 0)
+    mock.dimensions = (4032, 3024)
+    mock._master_record = {"recordName": asset_id, "fields": {}}
+    mock._asset_record = {"fields": {}}
+    mock.versions = {
+        AssetVersionSize.ORIGINAL: AssetVersion(
+            filename="IMG_7409.JPG",
+            size=4_500_000,
+            url="https://cvws.icloud-content.com/B/original/IMG_7409.JPG",
+            type="public.jpeg",
+            file_extension="JPG",
+        ),
+        AssetVersionSize.ADJUSTED: AssetVersion(
+            filename="IMG_7409.JPG",
+            size=2_100_000,
+            url="https://cvws.icloud-content.com/B/adjusted/IMG_7409.JPG",
+            type="public.jpeg",
+            file_extension="JPG",
+        ),
+    }
+    return mock
 
 
 class TestPhotoDatabase:
     """Test database operations."""
 
-    def setup_method(self):
-        """Set up test database."""
+    def setup_method(self) -> None:
         self.temp_dir = tempfile.mkdtemp()
         self.db = PhotoDatabase(Path(self.temp_dir))
 
-    def teardown_method(self):
-        """Clean up test database."""
-        import shutil
-
+    def teardown_method(self) -> None:
         shutil.rmtree(self.temp_dir)
 
-    def test_insert_and_get_asset(self):
-        """Test inserting and retrieving an asset."""
-        asset_data = {
-            "asset_id": "test123",
-            "filename": "test.jpg",
-            "asset_type": "photo",
-            "created_date": "2024-01-01T00:00:00",
-            "added_date": "2024-01-01T00:00:00",
-            "width": 1920,
-            "height": 1080,
-            "available_versions": ["original", "adjusted"],
-            "downloaded_versions": [],
-            "failed_versions": [],
-            "master_record": {"test": "data"},
-            "asset_record": {"test": "data"},
-        }
+    def test_upsert_and_get_icloud_metadata(self) -> None:
+        record = ICloudAssetRecord(
+            asset_id="test123",
+            filename="test.jpg",
+            asset_type="image",
+            created_date="2024-01-01T00:00:00",
+            added_date="2024-01-01T00:00:00",
+            width=1920,
+            height=1080,
+            asset_versions={
+                "original": {
+                    "filename": "test.jpg",
+                    "size": 1024,
+                    "url": "https://example.com/test.jpg",
+                    "type": "public.jpeg",
+                    "file_extension": "JPG",
+                }
+            },
+            master_record={"test": "data"},
+            asset_record={"test": "data"},
+        )
 
-        self.db.insert_asset(asset_data)
-        retrieved = self.db.get_asset("test123")
+        result = self.db.upsert_icloud_metadata(record)
+        assert result.operation == UpsertResult.INSERTED
 
+        retrieved = self.db.get_icloud_metadata("test123")
         assert retrieved is not None
-        assert retrieved["asset_id"] == "test123"
-        assert retrieved["filename"] == "test.jpg"
-        assert retrieved["available_versions"] == ["original", "adjusted"]
+        assert retrieved.asset_id == "test123"
+        assert retrieved.filename == "test.jpg"
+        assert "original" in retrieved.asset_versions
 
-    def test_update_download_status(self):
-        """Test updating download status."""
-        asset_data = {
-            "asset_id": "test123",
-            "filename": "test.jpg",
-            "asset_type": "photo",
-            "available_versions": ["original", "adjusted"],
-            "downloaded_versions": [],
-            "failed_versions": [],
-            "master_record": {},
-            "asset_record": {},
-        }
+    def test_upsert_icloud_metadata_update(self) -> None:
+        record = ICloudAssetRecord(asset_id="test123", filename="test.jpg")
+        self.db.upsert_icloud_metadata(record)
 
-        self.db.insert_asset(asset_data)
-        self.db.update_download_status("test123", ["original"], ["adjusted"])
+        record2 = ICloudAssetRecord(asset_id="test123", filename="test_updated.jpg")
+        result = self.db.upsert_icloud_metadata(record2)
+        assert result.operation == UpsertResult.UPDATED
 
-        retrieved = self.db.get_asset("test123")
-        assert retrieved["downloaded_versions"] == ["original"]
-        assert retrieved["failed_versions"] == ["adjusted"]
+        retrieved = self.db.get_icloud_metadata("test123")
+        assert retrieved is not None
+        assert retrieved.filename == "test_updated.jpg"
+
+    def test_upsert_and_get_sync_status(self) -> None:
+        record = ICloudAssetRecord(asset_id="test123", filename="test.jpg")
+        self.db.upsert_icloud_metadata(record)
+
+        status = SyncStatus(
+            asset_id="test123",
+            version_type="original",
+            sync_status="metadata_processed",
+        )
+        self.db.upsert_sync_status(status)
+
+        retrieved = self.db.get_sync_status("test123", "original")
+        assert retrieved is not None
+        assert retrieved.sync_status == "metadata_processed"
+
+    def test_get_assets_needing_download(self) -> None:
+        record = ICloudAssetRecord(asset_id="test123", filename="test.jpg")
+        self.db.upsert_icloud_metadata(record)
+
+        status = SyncStatus(
+            asset_id="test123",
+            version_type="original",
+            sync_status="metadata_processed",
+        )
+        self.db.upsert_sync_status(status)
+
+        assets = self.db.get_assets_needing_download()
+        assert "test123" in assets
+
+    def test_upsert_and_get_local_file(self) -> None:
+        record = ICloudAssetRecord(asset_id="test123", filename="test.jpg")
+        self.db.upsert_icloud_metadata(record)
+
+        local_file = LocalFileRecord(
+            asset_id="test123",
+            version_type="original",
+            local_filename="test123-original.jpg",
+            file_path="_data/test123-original.jpg",
+            file_size=1024,
+            download_date="2024-01-01T00:00:00",
+        )
+        self.db.upsert_local_file(local_file)
+
+        files = self.db.get_local_files("test123")
+        assert len(files) == 1
+        assert files[0].version_type == "original"
+        assert files[0].file_size == 1024
+
+    def test_get_asset_count(self) -> None:
+        assert self.db.get_asset_count() == 0
+
+        self.db.upsert_icloud_metadata(ICloudAssetRecord(asset_id="a1", filename="a.jpg"))
+        self.db.upsert_icloud_metadata(ICloudAssetRecord(asset_id="a2", filename="b.jpg"))
+        assert self.db.get_asset_count() == 2
 
 
 class TestFileManager:
     """Test file operations."""
 
-    def setup_method(self):
-        """Set up test file manager."""
+    def setup_method(self) -> None:
         self.temp_dir = tempfile.mkdtemp()
         self.file_manager = FileManager(Path(self.temp_dir))
 
-    def teardown_method(self):
-        """Clean up test files."""
-        import shutil
-
+    def teardown_method(self) -> None:
         shutil.rmtree(self.temp_dir)
 
-    def test_get_file_path(self):
-        """Test file path generation."""
-        path = self.file_manager.get_file_path("test123", "original", "test.jpg")
-        expected = Path(self.temp_dir) / "_data" / "test123-original.jpg"
-        assert path == expected
+    def test_get_file_path(self) -> None:
+        mock_asset = _make_mock_asset()
+        path = self.file_manager.get_file_path(mock_asset, AssetVersionSize.ORIGINAL)
 
-    def test_save_and_check_file(self):
-        """Test saving and checking file existence."""
+        assert path.parent == Path(self.temp_dir) / "_data"
+        assert path.suffix == ".jpg"
+        assert "original" in path.name
+
+    def test_save_and_check_file(self) -> None:
+        mock_asset = _make_mock_asset()
         content = b"test file content"
-        success = self.file_manager.save_file("test123", "original", "test.jpg", content)
+        success = self.file_manager.save_file(mock_asset, AssetVersionSize.ORIGINAL, content)
 
         assert success is True
-        assert self.file_manager.file_exists("test123", "original", "test.jpg") is True
+        assert self.file_manager.file_exists(mock_asset, AssetVersionSize.ORIGINAL) is True
 
-    def test_list_downloaded_files(self):
-        """Test listing downloaded files."""
-        # Create some test files
-        self.file_manager.save_file("test123", "original", "test.jpg", b"content1")
-        self.file_manager.save_file("test123", "adjusted", "test.jpg", b"content2")
+    def test_get_file_size(self) -> None:
+        mock_asset = _make_mock_asset()
+        content = b"test file content"
+        self.file_manager.save_file(mock_asset, AssetVersionSize.ORIGINAL, content)
 
-        downloaded = self.file_manager.list_downloaded_files("test123")
-        assert "original" in downloaded
-        assert "adjusted" in downloaded
+        size = self.file_manager.get_file_size(mock_asset, AssetVersionSize.ORIGINAL)
+        assert size == len(content)
+
+    def test_cleanup_incomplete_downloads(self) -> None:
+        data_dir = Path(self.temp_dir) / "_data"
+        (data_dir / "partial_download.jpg.tmp").write_bytes(b"partial")
+
+        cleaned = self.file_manager.cleanup_incomplete_downloads()
+        assert cleaned == 1
+        assert not (data_dir / "partial_download.jpg.tmp").exists()
 
 
-class TestAssetProcessor:
-    """Test asset processing."""
+class TestPhotoAssetRecordMapper:
+    """Test asset mapping from PhotoAsset to database records."""
 
-    def setup_method(self):
-        """Set up test asset processor."""
-        self.temp_dir = tempfile.mkdtemp()
-        self.db = PhotoDatabase(Path(self.temp_dir))
-        self.processor = AssetProcessor(self.db)
+    def test_map_icloud_metadata(self) -> None:
+        mock_asset = _make_mock_asset()
+        mapper = PhotoAssetRecordMapper()
+        record = mapper.map_icloud_metadata(mock_asset)
 
-    def teardown_method(self):
-        """Clean up test files."""
-        import shutil
+        assert record.asset_id == "AYk6Y+tESR"
+        assert record.filename == "IMG_7409.JPG"
+        assert record.width == 4032
+        assert record.height == 3024
+        assert "original" in record.asset_versions
+        assert "adjusted" in record.asset_versions
 
-        shutil.rmtree(self.temp_dir)
+    def test_map_sync_statuses(self) -> None:
+        mock_asset = _make_mock_asset()
+        mapper = PhotoAssetRecordMapper()
+        statuses = mapper.map_sync_statuses(mock_asset)
 
-    def test_process_asset(self):
-        """Test processing a mock asset."""
-        # Create a mock asset
-        mock_asset = Mock()
-        mock_asset.id = "test123"
-        mock_asset.filename = "test.jpg"
-        mock_asset.created = "2024-01-01T00:00:00"
-        mock_asset.added = "2024-01-01T00:00:00"
-        mock_asset.dimensions = (1920, 1080)
-        mock_asset.location = None
-        mock_asset.versions = []
-        mock_asset.master_record = {"test": "data"}
-        mock_asset.asset_record = {"test": "data"}
-
-        processed = self.processor.process_asset(mock_asset)
-
-        assert processed["asset_id"] == "test123"
-        assert processed["filename"] == "test.jpg"
-        assert processed["asset_type"] == "photo"
-        assert processed["width"] == 1920
-        assert processed["height"] == 1080
+        assert len(statuses) == 2
+        assert all(s.sync_status == "pending" for s in statuses)
+        version_types = {s.version_type for s in statuses}
+        assert "original" in version_types
+        assert "adjusted" in version_types
 
 
 class TestSyncManager:
     """Test sync manager."""
 
-    def setup_method(self):
-        """Set up test sync manager."""
+    def setup_method(self) -> None:
         self.temp_dir = tempfile.mkdtemp()
         self.sync_manager = SyncManager(Path(self.temp_dir))
 
-    def teardown_method(self):
-        """Clean up test files."""
-        import shutil
-
+    def teardown_method(self) -> None:
         shutil.rmtree(self.temp_dir)
         self.sync_manager.cleanup()
 
-    def test_get_sync_stats(self):
-        """Test getting sync statistics."""
+    def test_get_sync_stats_empty(self) -> None:
         stats = self.sync_manager._get_sync_stats()
 
-        assert "total_assets" in stats
-        assert "downloaded_assets" in stats
-        assert "failed_assets" in stats
-        assert "disk_usage_bytes" in stats
         assert stats["total_assets"] == 0
         assert stats["downloaded_assets"] == 0
+        assert stats["failed_assets"] == 0
+        assert stats["disk_usage_bytes"] == 0
+
+    def test_resolve_version_size(self) -> None:
+        mock_asset = _make_mock_asset()
+
+        resolved = SyncManager._resolve_version_size("original", mock_asset)
+        assert resolved == AssetVersionSize.ORIGINAL
+
+        resolved = SyncManager._resolve_version_size("adjusted", mock_asset)
+        assert resolved == AssetVersionSize.ADJUSTED
+
+        resolved = SyncManager._resolve_version_size("nonexistent", mock_asset)
+        assert resolved is None

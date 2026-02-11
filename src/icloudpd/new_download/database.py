@@ -5,14 +5,12 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple
 
 from .constants import DATABASE_FILENAME
 
-
-from enum import Enum
-from typing import NamedTuple
 
 class UpsertResult(Enum):
     INSERTED = "inserted"
@@ -23,17 +21,17 @@ class ICloudAssetRecord:
     """iCloud metadata for an asset (remote information)."""
     asset_id: str  # Original iCloud asset ID
     filename: str  # Original filename from iCloud
-    asset_type: Optional[str] = None  # e.g., "image", "movie"
-    asset_subtype: Optional[str] = None  # e.g., "live_photo", "burst", "hdr"
-    created_date: Optional[str] = None
-    added_date: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
+    asset_type: str | None = None  # e.g., "image", "movie"
+    asset_subtype: str | None = None  # e.g., "live_photo", "burst", "hdr"
+    created_date: str | None = None
+    added_date: str | None = None
+    width: int | None = None
+    height: int | None = None
     asset_versions: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # Dict with version_size as key, AssetVersion object as value
     master_record: Dict[str, Any] = field(default_factory=dict)
     asset_record: Dict[str, Any] = field(default_factory=dict)
-    last_metadata_update: Optional[str] = None
-    metadata_inserted_date: Optional[str] = None
+    last_metadata_update: str | None = None
+    metadata_inserted_date: str | None = None
 
 
 class ICloudAssetUpsertResult(NamedTuple):
@@ -48,9 +46,9 @@ class AssetVersionMetadata:
     version_type: str  # e.g., "original", "adjusted", "alternative"
     version_size: str  # e.g., "original", "medium", "thumb"
     file_extension: str
-    file_size: Optional[int] = None
-    checksum: Optional[str] = None
-    download_url: Optional[str] = None
+    file_size: int | None = None
+    checksum: str | None = None
+    download_url: str | None = None
 
 
 @dataclass
@@ -62,7 +60,7 @@ class LocalFileRecord:
     file_path: str  # Full path relative to base directory
     file_size: int
     download_date: str
-    checksum: Optional[str] = None
+    checksum: str | None = None
 
 
 @dataclass
@@ -71,9 +69,9 @@ class SyncStatus:
     asset_id: str
     version_type: str  # e.g., "original", "adjusted", "alternative"
     sync_status: str = "pending"  # pending, metadata_processed, downloading, completed, failed
-    last_sync_date: Optional[str] = None
+    last_sync_date: str | None = None
     retry_count: int = 0
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 class PhotoDatabase:
@@ -285,7 +283,7 @@ class PhotoDatabase:
             )
             conn.commit()
 
-    def get_icloud_metadata(self, asset_id: str) -> Optional[ICloudAssetRecord]:
+    def get_icloud_metadata(self, asset_id: str) -> ICloudAssetRecord | None:
         """Get iCloud metadata for an asset.
 
         Args:
@@ -339,7 +337,7 @@ class PhotoDatabase:
 
             return files
 
-    def get_sync_status(self, asset_id: str, version_type: str) -> Optional[SyncStatus]:
+    def get_sync_status(self, asset_id: str, version_type: str) -> SyncStatus | None:
         """Get sync status for a specific asset version.
 
         Args:
@@ -470,7 +468,7 @@ class PhotoDatabase:
             return cursor.fetchone()[0]
 
     # Legacy compatibility methods for transition
-    def get_asset(self, asset_id: str) -> Optional[Dict[str, Any]]:
+    def get_asset(self, asset_id: str) -> Dict[str, Any] | None:
         """Legacy method to get asset data in old format.
 
         Args:

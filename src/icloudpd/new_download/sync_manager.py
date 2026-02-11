@@ -1,20 +1,26 @@
 """Main orchestration for the new download architecture."""
 
 import logging
-from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
 
-from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
-from icloudpd.new_download.sync_strategy import PhotosToSync
 from pyicloud_ipd.services.photos import PhotoAsset
+from pyicloud_ipd.version_size import VersionSize
 
-from .database import PhotoDatabase, UpsertResult, ICloudAssetRecord
+from .constants import DOWNLOAD_VERSIONS
+from .database import (
+    ICloudAssetRecord,
+    LocalFileRecord,
+    PhotoDatabase,
+    SyncStatus,
+    UpsertResult,
+)
 from .download_manager import DownloadManager
 from .file_manager import FileManager
+from .photo_asset_record_mapper import PhotoAssetRecordMapper
 from .progress_reporter import ProgressReporter, TerminalProgressReporter
-from .database import SyncStatus, LocalFileRecord
-from .constants import DOWNLOAD_VERSIONS
+from .sync_strategy import PhotosToSync
 
 logger = logging.getLogger(__name__)
 
@@ -22,68 +28,41 @@ logger = logging.getLogger(__name__)
 class SyncManager:
     """Main orchestration class for downloading iCloud photos."""
 
-    def __init__(self, base_directory: Path, progress_reporter: Optional[ProgressReporter] = None):
-        """Initialize sync manager.
-
-        Args:
-            base_directory: Base directory for downloads
-            progress_reporter: Optional progress reporter for tracking sync progress
-        """
+    def __init__(self, base_directory: Path, progress_reporter: ProgressReporter | None = None):
         self.base_directory = Path(base_directory)
         self.progress_reporter = progress_reporter or TerminalProgressReporter()
 
-        # Initialize components
         self.database = PhotoDatabase(self.base_directory)
         self.file_manager = FileManager(self.base_directory)
         self.mapper = PhotoAssetRecordMapper()
         self.download_manager = DownloadManager(self.file_manager)
 
     def sync_photos(self, photos_to_sync: PhotosToSync) -> Dict[str, Any]:
-        """Main sync method to download photos from iCloud using phased approach.
-
-        Args:
-            photos_strategy: PhotoFilterStrategy instance that provides photos to sync
-
-        Returns:
-            Dictionary with sync statistics
-        """
+        """Main sync method: metadata collection then download."""
         logger.info("Starting photo sync with phased approach...")
 
-        # Clean up any incomplete downloads
         cleaned_count = self.file_manager.cleanup_incomplete_downloads()
         if cleaned_count > 0:
             logger.info(f"Cleaned up {cleaned_count} incomplete downloads")
 
-        # Phase 1: Metadata collection and change detection
         phase1_stats, asset_map = self._phase1_metadata_collection(photos_to_sync)
-        
-        # Phase 2: Download files based on database state
-        phase2_stats = self._phase2_download_assets(asset_map)
+        self._phase2_download_assets(asset_map)
 
-        # Get final statistics
         final_stats = self._get_sync_stats()
-        
-        # Report completion
         self.progress_reporter.sync_complete(final_stats)
-        
         return final_stats
 
-    def _phase1_metadata_collection(self, photos_to_sync: PhotosToSync) -> tuple[Dict[str, Any], Dict[str, PhotoAsset]]:
-        """Phase 1: Collect metadata from iCloud and determine what needs downloading.
+    # -- Phase 1: Metadata collection -------------------------------------------
 
-        Args:
-            photos_strategy: PhotoFilterStrategy instance that provides photos to sync
-
-        Returns:
-            Tuple of (phase 1 statistics, asset_id to PhotoAsset mapping)
-        """
+    def _phase1_metadata_collection(
+        self, photos_to_sync: PhotosToSync
+    ) -> tuple[Dict[str, Any], Dict[str, PhotoAsset]]:
+        """Collect metadata from iCloud and determine what needs downloading."""
         logger.info("Phase 1: Starting metadata collection and change detection...")
-        
-        # Get total count from strategy (now length-aware)
+
         total_photos = len(photos_to_sync)
-        
         self.progress_reporter.phase_start("Phase 1: Change detection", total_photos)
-        
+
         processed_count = 0
         new_assets = 0
         updated_assets = 0
@@ -92,361 +71,258 @@ class SyncManager:
 
         for i, asset in enumerate(photos_to_sync):
             try:
-                # Store asset for Phase 2
                 asset_map[asset.id] = asset
-                
-                # Map asset to new database structure
                 icloud_metadata = self.mapper.map_icloud_metadata(asset)
-                
-                # Insert/update in database
+
                 upsert_result = self.database.upsert_icloud_metadata(icloud_metadata)
-                logger.debug(f"Asset {asset.id}: {upsert_result.operation.value}")
-                
-                                # Track insert vs update statistics
                 if upsert_result.operation == UpsertResult.INSERTED:
                     new_assets += 1
                 else:
                     updated_assets += 1
-                
-                # Determine what needs to be downloaded for this asset
+
                 sync_statuses = self._determine_download_needs(asset, icloud_metadata)
-                
-                # Insert sync statuses
                 for status in sync_statuses:
                     self.database.upsert_sync_status(status)
-                
-                processed_count += 1
 
+                processed_count += 1
             except Exception as e:
                 logger.error(f"Failed to process metadata for asset {asset.id}: {e}")
                 failed_assets += 1
-                # Mark as failed in database
-                try:
-                    failed_status = SyncStatus(
-                        asset_id=asset.id,
-                        version_type="original",  # Default version
-                        sync_status="failed",
-                        error_message=str(e)
-                    )
-                    self.database.upsert_sync_status(failed_status)
-                except Exception as db_error:
-                    logger.error(f"Failed to mark asset {asset.id} as failed: {db_error}")
+                self._mark_asset_failed(asset.id, "original", str(e))
 
-            # Report progress
             self.progress_reporter.phase_progress(i + 1, total_photos)
 
-        # Report phase completion
         phase1_stats = {
             "processed": processed_count,
             "new_assets": new_assets,
             "updated_assets": updated_assets,
             "failed_assets": failed_assets,
         }
-        
         self.progress_reporter.phase_complete("Phase 1: Change detection", phase1_stats)
         logger.info(f"Phase 1 completed: {processed_count} assets processed")
-        
         return phase1_stats, asset_map
 
-    def _determine_download_needs(self, asset: PhotoAsset, icloud_metadata: ICloudAssetRecord) -> List[SyncStatus]:
-        """Determine what needs to be downloaded for this asset based on available versions and sync status.
-        
-        Args:
-            asset: The PhotoAsset from iCloud
-            icloud_metadata: The ICloudAssetRecord with metadata
-            
-        Returns:
-            List of SyncStatus objects for versions that need processing
-        """
-        sync_statuses = []
-        
-        # Get available versions from the asset
-        available_versions = list(icloud_metadata.asset_versions.keys())
-        
-        # Get existing sync statuses for this asset
+    def _determine_download_needs(
+        self, asset: PhotoAsset, icloud_metadata: ICloudAssetRecord
+    ) -> List[SyncStatus]:
+        """Determine which versions need downloading for an asset."""
+        sync_statuses: List[SyncStatus] = []
+
+        available_versions = set(icloud_metadata.asset_versions.keys())
         existing_statuses = self.database.get_all_sync_statuses(asset.id)
-        existing_version_types = {status.version_type for status in existing_statuses}
-        
-        # Determine which versions we want to download based on DOWNLOAD_VERSIONS
-        desired_versions = []
-        for version_size in DOWNLOAD_VERSIONS:
-            version_key = version_size.value
-            if version_key in available_versions:
-                desired_versions.append(version_key)
-        
-        # For each desired version, check if we need to process it
+        local_files = self.database.get_local_files(asset.id)
+        local_version_types = {f.version_type for f in local_files}
+
+        desired_versions = [vs.value for vs in DOWNLOAD_VERSIONS if vs.value in available_versions]
+
         for version_type in desired_versions:
-            # Check if this version already has a completed sync status
-            existing_status = next(
-                (status for status in existing_statuses if status.version_type == version_type),
-                None
-            )
-            
-            if existing_status and existing_status.sync_status == "completed":
-                # Already downloaded, skip
-                logger.debug(f"Asset {asset.id} version {version_type}: already completed")
+            existing = next((s for s in existing_statuses if s.version_type == version_type), None)
+            if existing and existing.sync_status == "completed":
                 continue
-            
-            # Check if we have a local file for this version
-            local_files = self.database.get_local_files(asset.id)
-            has_local_file = any(f.version_type == version_type for f in local_files)
-            
-            if has_local_file:
-                # Local file exists, mark as completed
-                sync_statuses.append(SyncStatus(
-                    asset_id=asset.id,
-                    version_type=version_type,
-                    sync_status="completed"
-                ))
-                logger.debug(f"Asset {asset.id} version {version_type}: local file exists, marking as completed")
+
+            if version_type in local_version_types:
+                sync_statuses.append(
+                    SyncStatus(
+                        asset_id=asset.id,
+                        version_type=version_type,
+                        sync_status="completed",
+                    )
+                )
             else:
-                # Need to download this version
-                sync_statuses.append(SyncStatus(
-                    asset_id=asset.id,
-                    version_type=version_type,
-                    sync_status="pending"
-                ))
-                logger.debug(f"Asset {asset.id} version {version_type}: needs download")
-        
+                sync_statuses.append(
+                    SyncStatus(
+                        asset_id=asset.id,
+                        version_type=version_type,
+                        sync_status="metadata_processed",
+                    )
+                )
+
         return sync_statuses
 
+    # -- Phase 2: Download assets -----------------------------------------------
+
     def _phase2_download_assets(self, asset_map: Dict[str, PhotoAsset]) -> Dict[str, Any]:
-        """Phase 2: Download assets based on database state.
-
-        Args:
-            asset_map: Mapping of asset_id to PhotoAsset objects
-
-        Returns:
-            Dictionary with phase 2 statistics
-        """
+        """Download assets that have metadata_processed status."""
         logger.info("Phase 2: Starting asset downloads...")
-        
-        # Get assets that need downloading
+
         assets_to_download = self.database.get_assets_needing_download()
         total_assets = len(assets_to_download)
-        
+
         if total_assets == 0:
             logger.info("No assets need downloading")
             return {"downloaded": 0, "failed": 0, "skipped": 0}
-        
+
         self.progress_reporter.phase_start("Phase 2: Downloading assets", total_assets)
-        
+
         downloaded_count = 0
         failed_count = 0
         skipped_count = 0
 
         for i, asset_id in enumerate(assets_to_download):
             try:
-                # Get the PhotoAsset object for downloading
-                icloud_asset = asset_map.get(asset_id)
-                if not icloud_asset:
-                    logger.warning(f"Asset {asset_id} not found in asset map")
-                    failed_count += 1
-                    # Mark as failed in database
-                    failed_status = SyncStatus(
-                        asset_id=asset_id,
-                        version_type="original",
-                        sync_status="failed",
-                                            error_message="Asset not found in asset map"
-                )
-                    self.database.upsert_sync_status(failed_status)
-                    continue
-                
-                # Get asset metadata and versions
-                metadata = self.database.get_icloud_metadata(asset_id)
-                if not metadata:
-                    logger.warning(f"Asset {asset_id} not found in database")
-                    failed_count += 1
-                    continue
-                
-                # Get available versions and determine what needs downloading
-                available_versions = list(metadata.asset_versions.keys())
-                local_files = self.database.get_local_files(asset_id)
-                downloaded_versions = [f.version_type for f in local_files]
-                
-                versions_to_download = [
-                    version for version in available_versions
-                    if version not in downloaded_versions
-                ]
-                
-                if not versions_to_download:
-                    # All versions already downloaded
-                    for version in available_versions:
-                        completed_status = SyncStatus(
-                            asset_id=asset_id,
-                            version_type=version,
-                            sync_status="completed"
-                        )
-                        self.database.upsert_sync_status(completed_status)
-                    skipped_count += 1
-                    continue
-                
-                # Download each version
-                for version_type in versions_to_download:
-                    try:
-                        # Mark as downloading
-                        downloading_status = SyncStatus(
-                            asset_id=asset_id,
-                            version_type=version_type,
-                            sync_status="downloading"
-                        )
-                        self.database.upsert_sync_status(downloading_status)
-                        
-                        # Download the version (simplified - would need actual download logic)
-                        # For now, just mark as completed
-                        completed_status = SyncStatus(
-                            asset_id=asset_id,
-                            version_type=version_type,
-                            sync_status="completed"
-                        )
-                        self.database.upsert_sync_status(completed_status)
-                        
-                        # Create local file record
-                        local_file = LocalFileRecord(
-                            asset_id=asset_id,
-                            version_type=version_type,
-                            local_filename=f"{asset_id}-{version_type}.jpg",  # Simplified
-                            file_path=f"_data/{asset_id}-{version_type}.jpg",
-                            file_size=1024,  # Placeholder
-                            download_date=datetime.now().isoformat(),
-                            checksum=None
-                        )
-                        self.database.upsert_local_file(local_file)
-                        
-                    except Exception as e:
-                        logger.error(f"Failed to download version {version_type} for asset {asset_id}: {e}")
-                        failed_status = SyncStatus(
-                            asset_id=asset_id,
-                            version_type=version_type,
-                            sync_status="failed",
-                            error_message=str(e)
-                        )
-                        self.database.upsert_sync_status(failed_status)
-                        failed_count += 1
-                        break
-                else:
-                    # All versions downloaded successfully
+                result = self._download_single_asset(asset_id, asset_map)
+                if result == "downloaded":
                     downloaded_count += 1
-                
+                elif result == "failed":
+                    failed_count += 1
+                else:
+                    skipped_count += 1
             except Exception as e:
                 logger.error(f"Failed to download asset {asset_id}: {e}")
                 failed_count += 1
-                failed_status = SyncStatus(
-                    asset_id=asset_id,
-                    version_type="original",
-                    sync_status="failed",
-                    error_message=str(e)
-                )
-                self.database.upsert_sync_status(failed_status)
-            
-            # Report progress
+                self._mark_asset_failed(asset_id, "original", str(e))
+
             self.progress_reporter.phase_progress(i + 1, total_assets)
 
-        # Report phase completion
         phase2_stats = {
             "downloaded": downloaded_count,
             "failed": failed_count,
             "skipped": skipped_count,
         }
-        
         self.progress_reporter.phase_complete("Phase 2: Downloading assets", phase2_stats)
-        logger.info(f"Phase 2 completed: {downloaded_count} downloaded, {failed_count} failed, {skipped_count} skipped")
-        
+        logger.info(
+            f"Phase 2 completed: {downloaded_count} downloaded, "
+            f"{failed_count} failed, {skipped_count} skipped"
+        )
         return phase2_stats
 
-    def _find_icloud_asset(self, asset_id: str, icloud_photos: Any) -> Any | None:
-        """Find an asset in the iCloud photos collection.
-
-        Args:
-            asset_id: iCloud asset ID
-            icloud_photos: iCloud photos collection
+    def _download_single_asset(self, asset_id: str, asset_map: Dict[str, PhotoAsset]) -> str:
+        """Download all pending versions of a single asset.
 
         Returns:
-            iCloud asset object or None if not found
+            "downloaded", "failed", or "skipped"
         """
-        try:
-            # Try to find by ID
-            for asset in icloud_photos:
-                if hasattr(asset, "id") and asset.id == asset_id:
-                    return asset
-        except Exception as e:
-            logger.error(f"Error searching for asset {asset_id}: {e}")
+        icloud_asset = asset_map.get(asset_id)
+        if not icloud_asset:
+            logger.warning(f"Asset {asset_id} not found in asset map")
+            self._mark_asset_failed(asset_id, "original", "Asset not found in asset map")
+            return "failed"
 
+        metadata = self.database.get_icloud_metadata(asset_id)
+        if not metadata:
+            logger.warning(f"Asset {asset_id} not found in database")
+            return "failed"
+
+        # Resolve which VersionSize enums to download
+        versions_to_download = self._resolve_pending_versions(asset_id, icloud_asset)
+        if not versions_to_download:
+            return "skipped"
+
+        # Use DownloadManager for authenticated, parallel download
+        downloaded_values, failed_values = self.download_manager.download_asset_versions(
+            metadata, icloud_asset, versions_to_download
+        )
+
+        # Record results
+        self._record_download_results(asset_id, icloud_asset, downloaded_values, failed_values)
+
+        if failed_values:
+            return "failed"
+        return "downloaded"
+
+    def _resolve_pending_versions(
+        self, asset_id: str, icloud_asset: PhotoAsset
+    ) -> List[VersionSize]:
+        """Get VersionSize enums for versions that need downloading."""
+        pending_statuses = [
+            s
+            for s in self.database.get_all_sync_statuses(asset_id)
+            if s.sync_status == "metadata_processed"
+        ]
+        versions: List[VersionSize] = []
+        for status in pending_statuses:
+            version_size = self._resolve_version_size(status.version_type, icloud_asset)
+            if version_size is not None:
+                versions.append(version_size)
+            else:
+                logger.warning(
+                    f"Could not resolve version '{status.version_type}' for asset {asset_id}"
+                )
+        return versions
+
+    def _record_download_results(
+        self,
+        asset_id: str,
+        icloud_asset: PhotoAsset,
+        downloaded_values: List[str],
+        failed_values: List[str],
+    ) -> None:
+        """Record download results in the database."""
+        for version_value in downloaded_values:
+            version_size = self._resolve_version_size(version_value, icloud_asset)
+            if version_size is None:
+                continue
+
+            file_path = self.file_manager.get_file_path(icloud_asset, version_size)
+            file_size = self.file_manager.get_file_size(icloud_asset, version_size) or 0
+
+            self.database.upsert_local_file(
+                LocalFileRecord(
+                    asset_id=asset_id,
+                    version_type=version_value,
+                    local_filename=file_path.name,
+                    file_path=str(file_path.relative_to(self.base_directory)),
+                    file_size=file_size,
+                    download_date=datetime.now().isoformat(),
+                    checksum=None,
+                )
+            )
+            self.database.upsert_sync_status(
+                SyncStatus(
+                    asset_id=asset_id,
+                    version_type=version_value,
+                    sync_status="completed",
+                )
+            )
+
+        for version_value in failed_values:
+            self.database.upsert_sync_status(
+                SyncStatus(
+                    asset_id=asset_id,
+                    version_type=version_value,
+                    sync_status="failed",
+                    error_message="Download failed",
+                )
+            )
+
+    # -- Helpers ----------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_version_size(version_key: str, icloud_asset: PhotoAsset) -> VersionSize | None:
+        """Map a version key string back to a VersionSize enum."""
+        for version_size in icloud_asset.versions:
+            if version_size.value == version_key:
+                return version_size
         return None
 
-    def _update_download_status(self, download_results: Dict[str, tuple]) -> None:
-        """Update database with download results.
-
-        Args:
-            download_results: Dictionary mapping asset_id to (downloaded_versions, failed_versions)
-        """
-        for asset_id, (downloaded_versions, failed_versions) in download_results.items():
-            try:
-                # Update sync status for each version
-                for version in downloaded_versions:
-                    status = SyncStatus(
-                        asset_id=asset_id,
-                        version_type=version,
-                        sync_status="completed"
-                    )
-                    self.database.upsert_sync_status(status)
-                
-                for version in failed_versions:
-                    status = SyncStatus(
-                        asset_id=asset_id,
-                        version_type=version,
-                        sync_status="failed",
-                        error_message="Download failed"
-                    )
-                    self.database.upsert_sync_status(status)
-            except Exception as e:
-                logger.error(f"Failed to update download status for asset {asset_id}: {e}")
+    def _mark_asset_failed(self, asset_id: str, version_type: str, error: str) -> None:
+        """Mark an asset version as failed in the database."""
+        try:
+            self.database.upsert_sync_status(
+                SyncStatus(
+                    asset_id=asset_id,
+                    version_type=version_type,
+                    sync_status="failed",
+                    error_message=error,
+                )
+            )
+        except Exception as db_error:
+            logger.error(f"Failed to mark asset {asset_id} as failed: {db_error}")
 
     def _get_sync_stats(self) -> Dict[str, Any]:
-        """Get synchronization statistics.
-
-        Returns:
-            Dictionary with sync statistics
-        """
+        """Get synchronization statistics."""
         total_assets = self.database.get_asset_count()
         downloaded_assets = self.database.get_downloaded_count()
-        failed_assets = total_assets - downloaded_assets
-
         disk_usage = self.file_manager.get_disk_usage()
 
         return {
             "total_assets": total_assets,
             "downloaded_assets": downloaded_assets,
-            "failed_assets": failed_assets,
+            "failed_assets": total_assets - downloaded_assets,
             "disk_usage_bytes": disk_usage,
             "disk_usage_mb": disk_usage / (1024 * 1024),
             "disk_usage_gb": disk_usage / (1024 * 1024 * 1024),
         }
-
-    def list_albums(self, icloud_photos: Any) -> List[Dict[str, Any]]:
-        """List available albums.
-
-        Args:
-            icloud_photos: iCloud photos collection
-
-        Returns:
-            List of album information
-        """
-        albums = []
-
-        try:
-            # Get albums from iCloud photos
-            if hasattr(icloud_photos, "albums"):
-                for album_name, album in icloud_photos.albums.items():
-                    album_info = {
-                        "name": album_name,
-                        "count": len(album) if hasattr(album, "__len__") else 0,
-                    }
-                    albums.append(album_info)
-        except Exception as e:
-            logger.error(f"Error listing albums: {e}")
-
-        return albums
 
     def cleanup(self) -> None:
         """Clean up resources."""

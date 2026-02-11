@@ -1,3 +1,13 @@
+## Instructions / Tenets
+1. Write modern python compatible with 3.11
+2. use modern tooling uv, ruff
+3. Use types
+4. Apply the following coding principles:
+   1/ composed method  
+   2/ single level of abstraction
+   3/ single responsibility
+
+
 # Cursor Rules for iCloud Photos Downloader
 
 ## Project Overview
@@ -274,4 +284,4 @@ tests/
 5. **Consider edge cases** that might be affected
 6. **Test the fix** thoroughly with existing test suite
 
-Remember: This project prioritizes **reliability**, **user experience**, and **maintainability** over raw performance. Always consider the impact on users when making changes. 
+Remember: This project prioritizes **reliability**, **user experience**, and **maintainability** over raw performance. Always consider the impact on users when making changes.

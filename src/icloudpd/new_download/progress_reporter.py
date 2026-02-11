@@ -4,7 +4,7 @@ import logging
 import sys
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +58,11 @@ class TerminalProgressReporter(ProgressReporter):
 
     def __init__(self):
         """Initialize terminal progress reporter."""
-        self.current_phase: Optional[str] = None
+        self.current_phase: str | None = None
         self.total_items: int = 0
         self.current_item: int = 0
-        self.phase_start_time: Optional[float] = None
-        self.last_update_time: Optional[float] = None
+        self.phase_start_time: float | None = None
+        self.last_update_time: float | None = None
 
     def phase_start(self, phase_name: str, total_items: int) -> None:
         """Start a new phase with progress bar."""

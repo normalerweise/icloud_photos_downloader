@@ -1,18 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git fetch:*)",
-      "Bash(git rebase:*)",
-      "Bash(git add:*)",
-      "Bash(ls:*)",
-      "Bash(git checkout:*)",
-      "Bash(rg:*)",
-      "Bash(grep:*)",
-      "Bash(find:*)",
-      "Bash(python:*)",
-      "Bash(PYTHONPATH=src python -c \"import src.icloudpd.base; print('Import successful')\")",
-      "Bash(touch:*)"
-    ],
-    "deny": []
+      "mcp__acp__Edit",
+      "mcp__acp__Write",
+      "mcp__acp__Bash"
+    ]
   }
 }
