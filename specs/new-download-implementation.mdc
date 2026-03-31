@@ -1,0 +1,102 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# New Download Architecture Implementation Plan
+
+## Overview
+This document outlines the implementation plan for refactoring the iCloud Photos Downloader to use a new architecture with SQLite database tracking and asset ID-based file naming.
+
+## Target Directory Structure
+```
+/base_directory/
+├── _metadata.sqlite
+├── _data/                    # Actual photo files
+│   ├── 3453453-original.jpg
+│   ├── 3453453-adjusted.jpg
+│   ├── 3453453-alternative.jpg
+│   └── 3453453-original.mov  # Live photo video component
+├── Library/                 # Date-based organization (future)
+└── Albums/                  # Album-based organization (future)
+```
+
+## Database Schema
+```sql
+CREATE TABLE photo_assets (
+    asset_id TEXT PRIMARY KEY,
+    filename TEXT,
+    asset_type TEXT,
+    created_date DATETIME,
+    added_date DATETIME,
+    width INTEGER,
+    height INTEGER,
+    location_latitude REAL,
+    location_longitude REAL,
+    location_altitude REAL,
+    available_versions TEXT,      -- JSON array
+    downloaded_versions TEXT,     -- JSON array
+    failed_versions TEXT,         -- JSON array
+    last_sync_date DATETIME,
+    master_record TEXT,           -- JSON blob
+    asset_record TEXT             -- JSON blob
+);
+```
+
+## Implementation Phases
+
+### Phase 1: Database Layer Foundation
+**Files to create:**
+- [src/icloudpd/new_download/__init__.py](mdc:src/icloudpd/new_download/__init__.py)
+- [src/icloudpd/new_download/database.py](mdc:src/icloudpd/new_download/database.py)
+- [src/icloudpd/new_download/constants.py](mdc:src/icloudpd/new_download/constants.py)
+
+**Key constants:**
+```python
+MAX_CONCURRENT_DOWNLOADS = 5
+DATABASE_FILENAME = "_metadata.sqlite"
+DATA_DIRECTORY = "_data"
+VERSIONS_TO_DOWNLOAD = ["original", "adjusted", "alternative"]
+VERSIONS_TO_SKIP = ["medium", "thumb"]
+```
+
+### Phase 2: Core Download Logic
+**Files to create:**
+- [src/icloudpd/new_download/asset_processor.py](mdc:src/icloudpd/new_download/asset_processor.py)
+- [src/icloudpd/new_download/download_manager.py](mdc:src/icloudpd/new_download/download_manager.py)
+- [src/icloudpd/new_download/file_manager.py](mdc:src/icloudpd/new_download/file_manager.py)
+
+### Phase 3: Integration Layer
+**Files to create:**
+- [src/icloudpd/new_download/sync_manager.py](mdc:src/icloudpd/new_download/sync_manager.py)
+
+### Phase 4: CLI Integration
+**Files to modify:**
+- [src/icloudpd/base.py](mdc:src/icloudpd/base.py) - Remove obsolete parameters and integrate new architecture
+
+## Download Strategy
+- **Versions to download**: `original` + `adjusted` (if available) + `alternative` (if available)
+- **Versions to skip**: `medium` and `thumb`
+- **File naming**: `{asset_id}-{version}.{extension}`
+- **Parallel downloads**: 5 concurrent (configurable)
+- **Live photos**: Same strategy for both image and video components
+
+## CLI Parameters to Remove
+- `--size`, `--live-photo-size`, `--album`, `--skip-videos`
+- `--skip-live-photos`, `--force-size`, `--folder-structure`
+- `--live-photo-mov-filename-policy`, `--align-raw`, `--file-match-policy`
+
+## CLI Parameters to Keep
+- `--recent`, `--since`, `--until-found`
+- All authentication and logging parameters not mentioned in spec
+
+## Error Handling
+- Track failed downloads in database for retry
+- No database corruption handling for now
+- No file system scanning - only create entries from iCloud assets
+- Commit database changes after each asset for consistency
+
+## Breaking Changes
+- This is a breaking change with no backward compatibility
+- New directory structure and file naming
+- Simplified CLI interface

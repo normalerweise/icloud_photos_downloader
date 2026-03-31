@@ -358,6 +358,11 @@ def add_global_options(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         default="console",
         type=lower,
     )
+    cloned.add_argument(
+        "--new-arch",
+        action="store_true",
+        help="Use the new download architecture (EXPERIMENTAL)",
+    )
     return cloned
 
 
@@ -528,6 +533,7 @@ def parse(args: Sequence[str]) -> Tuple[GlobalConfig, Sequence[UserConfig]]:
                 )
             ),
             mfa_provider=MFAProvider(global_ns.mfa_provider),
+            new_arch=global_ns.new_arch,
         ),
         user_nses,
     )
