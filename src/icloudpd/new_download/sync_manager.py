@@ -1,11 +1,12 @@
 """Main orchestration for the new download architecture."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 from pyicloud_ipd.services.photos import PhotoAsset
+from pyicloud_ipd.session import PyiCloudSession
 from pyicloud_ipd.version_size import VersionSize
 
 from .constants import DOWNLOAD_VERSIONS
@@ -28,14 +29,20 @@ logger = logging.getLogger(__name__)
 class SyncManager:
     """Main orchestration class for downloading iCloud photos."""
 
-    def __init__(self, base_directory: Path, progress_reporter: ProgressReporter | None = None):
+    def __init__(
+        self,
+        base_directory: Path,
+        session: PyiCloudSession,
+        progress_reporter: ProgressReporter | None = None,
+    ):
         self.base_directory = Path(base_directory)
         self.progress_reporter = progress_reporter or TerminalProgressReporter()
 
         self.database = PhotoDatabase(self.base_directory)
         self.file_manager = FileManager(self.base_directory)
         self.mapper = PhotoAssetRecordMapper()
-        self.download_manager = DownloadManager(self.file_manager)
+        self.download_manager = DownloadManager(self.file_manager, session)
+        self._deleted_count: int = 0
 
     def sync_photos(self, photos_to_sync: PhotosToSync) -> Dict[str, Any]:
         """Main sync method: metadata collection then download."""
@@ -46,6 +53,12 @@ class SyncManager:
             logger.info(f"Cleaned up {cleaned_count} incomplete downloads")
 
         phase1_stats, asset_map = self._phase1_metadata_collection(photos_to_sync)
+
+        if photos_to_sync.covers_full_library:
+            self._phase3_mirror_deletions(asset_map)
+        else:
+            logger.debug("Skipping deletion detection: strategy does not cover full library.")
+
         self._phase2_download_assets(asset_map)
 
         final_stats = self._get_sync_stats()
@@ -285,6 +298,23 @@ class SyncManager:
                 )
             )
 
+    # -- Phase 3: Mirror deletions ----------------------------------------------
+
+    def _phase3_mirror_deletions(self, asset_map: Dict[str, PhotoAsset]) -> None:
+        """Delete local files for assets no longer present in iCloud."""
+        logger.info("Phase 3: Starting deletion detection...")
+
+        deleted_ids = set(self.database.get_all_asset_ids()) - set(asset_map.keys())
+        detected_on = datetime.now(timezone.utc).isoformat()
+
+        for asset_id in deleted_ids:
+            self.file_manager.delete_asset_files(asset_id)
+            self.database.mark_asset_deleted(asset_id, detected_on)
+            logger.debug(f"Mirrored deletion of asset {asset_id}")
+
+        self._deleted_count = len(deleted_ids)
+        logger.info(f"Phase 3 completed: {self._deleted_count} assets removed (deleted from iCloud)")
+
     # -- Helpers ----------------------------------------------------------------
 
     @staticmethod
@@ -319,6 +349,7 @@ class SyncManager:
             "total_assets": total_assets,
             "downloaded_assets": downloaded_assets,
             "failed_assets": total_assets - downloaded_assets,
+            "deleted_assets": self._deleted_count,
             "disk_usage_bytes": disk_usage,
             "disk_usage_mb": disk_usage / (1024 * 1024),
             "disk_usage_gb": disk_usage / (1024 * 1024 * 1024),

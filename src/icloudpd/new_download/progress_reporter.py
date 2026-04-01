@@ -114,7 +114,10 @@ class TerminalProgressReporter(ProgressReporter):
         print(f"Total assets: {final_stats.get('total_assets', 0)}")
         print(f"Downloaded assets: {final_stats.get('downloaded_assets', 0)}")
         print(f"Failed assets: {final_stats.get('failed_assets', 0)}")
-        
+        deleted = final_stats.get('deleted_assets', 0)
+        if deleted > 0:
+            print(f"Deleted (mirrored from iCloud): {deleted}")
+
         if 'disk_usage_gb' in final_stats:
             print(f"Disk usage: {final_stats['disk_usage_gb']:.2f} GB")
         print("="*50)

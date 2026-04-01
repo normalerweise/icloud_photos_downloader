@@ -174,6 +174,26 @@ class FileManager:
             logger.error(f"Failed to delete file {file_path}: {e}")
             return False
 
+    def delete_asset_files(self, asset_id: str) -> int:
+        """Delete all local files for an asset.
+
+        Args:
+            asset_id: The iCloud asset ID
+
+        Returns:
+            Number of files deleted
+        """
+        encoded_id = base64.urlsafe_b64encode(asset_id.encode()).decode().rstrip("=")
+        deleted = 0
+        for f in self.data_directory.glob(f"{encoded_id}-*"):
+            try:
+                f.unlink()
+                logger.debug(f"Deleted file: {f}")
+                deleted += 1
+            except Exception as e:
+                logger.error(f"Failed to delete file {f}: {e}")
+        return deleted
+
     def get_file_size(self, icloud_asset: PhotoAsset, version: VersionSize) -> int | None:
         """Get file size in bytes.
 

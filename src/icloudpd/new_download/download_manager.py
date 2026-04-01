@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple
 
 from icloudpd.new_download.database import ICloudAssetRecord
 from pyicloud_ipd.services.photos import PhotoAsset
+from pyicloud_ipd.session import PyiCloudSession
 from pyicloud_ipd.version_size import VersionSize
 
 from .constants import MAX_CONCURRENT_DOWNLOADS, RETRY_ATTEMPTS, RETRY_DELAY
@@ -19,13 +20,15 @@ logger = logging.getLogger(__name__)
 class DownloadManager:
     """Manage parallel downloads with retry logic."""
 
-    def __init__(self, file_manager: FileManager):
+    def __init__(self, file_manager: FileManager, session: PyiCloudSession):
         """Initialize download manager.
 
         Args:
             file_manager: File manager instance
+            session: Authenticated iCloud session for downloads
         """
         self.file_manager = file_manager
+        self.session = session
 
     def download_asset_versions(
         self,
@@ -148,7 +151,7 @@ class DownloadManager:
             True if successful, False otherwise
         """
         try:
-            response = icloud_asset.download(url)
+            response = icloud_asset.download(self.session, url)
             response.raise_for_status()
             return self.file_manager.save_file_from_stream(file_path, response.raw)
         except Exception as e:

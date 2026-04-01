@@ -392,7 +392,7 @@ def _process_all_users_new_arch(
             return 1
 
         base_dir = Path(user_config.directory)
-        sync_manager = SyncManager(base_dir)
+        sync_manager = SyncManager(base_dir, icloud.photos.session)
 
         # Select filter strategy
         if user_config.recent is not None:

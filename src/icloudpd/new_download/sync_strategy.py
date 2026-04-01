@@ -12,8 +12,14 @@ class PhotosToSync(abc.ABC):
     @abc.abstractmethod
     def __len__(self) -> int: ...
 
+    @property
+    @abc.abstractmethod
+    def covers_full_library(self) -> bool: ...
+
 
 class RecentPhotosStrategy(PhotosToSync):
+    covers_full_library = False
+
     def __init__(self, photos_service: PhotosService, count: int):
         self.photos_service = photos_service
         self.recent = count
@@ -21,7 +27,8 @@ class RecentPhotosStrategy(PhotosToSync):
     def __iter__(self) -> Iterator[PhotoAsset]:
         from itertools import islice
 
-        return islice(self.photos_service.all(descending=True), self.recent)
+        # iCloud API returns photos newest-first (ASCENDING startRank, rank 0 = most recent)
+        return islice(self.photos_service.all, self.recent)
 
     def __len__(self) -> int:
         # For recent photos, we know the exact count
@@ -29,13 +36,16 @@ class RecentPhotosStrategy(PhotosToSync):
 
 
 class SinceDateStrategy(PhotosToSync):
+    covers_full_library = False
+
     def __init__(self, photos_service: PhotosService, since: datetime):
         self.photos_service = photos_service
         self.since = since
         self._cached_count: int | None = None
 
     def __iter__(self) -> Iterator[PhotoAsset]:
-        for p in self.photos_service.all(descending=True):
+        # iCloud API returns photos newest-first (ASCENDING startRank, rank 0 = most recent)
+        for p in self.photos_service.all:
             created = getattr(p, "created", None)
             since = self.since
             if isinstance(created, datetime) and isinstance(since, datetime):
@@ -48,13 +58,16 @@ class SinceDateStrategy(PhotosToSync):
         # Use total library count as upper-bound estimate (lightweight API call).
         # Exact filtered count is only known after iteration.
         if self._cached_count is None:
-            self._cached_count = len(self.photos_service.all())
+            self._cached_count = len(self.photos_service.all)
         return self._cached_count
 
 
 class NoOpStrategy(PhotosToSync):
+    covers_full_library = True
+
     def __init__(self, photos_service: PhotosService):
-        self.all_photos_album = photos_service.all(descending=True)
+        # iCloud API returns photos newest-first (ASCENDING startRank, rank 0 = most recent)
+        self.all_photos_album = photos_service.all
 
     def __iter__(self) -> Iterator[PhotoAsset]:
         return self.all_photos_album.__iter__()

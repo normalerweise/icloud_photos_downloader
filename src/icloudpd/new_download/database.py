@@ -32,6 +32,8 @@ class ICloudAssetRecord:
     asset_record: Dict[str, Any] = field(default_factory=dict)
     last_metadata_update: str | None = None
     metadata_inserted_date: str | None = None
+    deleted: bool = False
+    deletion_detected_on: str | None = None
 
 
 class ICloudAssetUpsertResult(NamedTuple):
@@ -107,7 +109,9 @@ class PhotoDatabase:
                     master_record TEXT,
                     asset_record TEXT,
                     last_metadata_update DATETIME,
-                    metadata_inserted_date DATETIME
+                    metadata_inserted_date DATETIME,
+                    deleted BOOLEAN DEFAULT FALSE,
+                    deletion_detected_on DATETIME
                 )
             """)
 
@@ -435,6 +439,50 @@ class PhotoDatabase:
             cursor = conn.execute("""
                 SELECT COUNT(DISTINCT asset_id) FROM local_files
             """)
+            return cursor.fetchone()[0]
+
+    def get_all_asset_ids(self) -> List[str]:
+        """Get all non-deleted asset IDs for deletion detection diff.
+
+        Returns:
+            List of asset IDs not yet tombstoned
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT asset_id FROM icloud_assets WHERE deleted = FALSE OR deleted IS NULL"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def mark_asset_deleted(self, asset_id: str, detected_on: str) -> None:
+        """Tombstone an asset and remove its operational child records.
+
+        Keeps the icloud_assets row as a historical record. Deletes local_files
+        and sync_status rows since those are operational state for files that no
+        longer exist on disk.
+
+        Args:
+            asset_id: The iCloud asset ID
+            detected_on: ISO 8601 timestamp (with UTC offset) when deletion was detected
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE icloud_assets SET deleted = TRUE, deletion_detected_on = ? WHERE asset_id = ?",
+                (detected_on, asset_id),
+            )
+            conn.execute("DELETE FROM sync_status WHERE asset_id = ?", (asset_id,))
+            conn.execute("DELETE FROM local_files WHERE asset_id = ?", (asset_id,))
+            conn.commit()
+
+    def get_deleted_asset_count(self) -> int:
+        """Get count of tombstoned assets.
+
+        Returns:
+            Count of assets marked as deleted from iCloud
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM icloud_assets WHERE deleted = TRUE"
+            )
             return cursor.fetchone()[0]
 
     def get_metadata_processed_count(self) -> int:
