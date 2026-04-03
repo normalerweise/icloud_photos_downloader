@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from icloudpd.new_download.database import (
+    AlbumRecord,
+    FolderRecord,
     ICloudAssetRecord,
     LocalFileRecord,
     PhotoDatabase,
@@ -435,3 +437,181 @@ class TestCoversFullLibrary:
 
     def test_since_date_strategy_does_not_cover_full_library(self) -> None:
         assert SinceDateStrategy.covers_full_library is False
+
+
+class TestFolderDatabase:
+    """Test folder table operations."""
+
+    def setup_method(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db = PhotoDatabase(Path(self.temp_dir))
+
+    def teardown_method(self) -> None:
+        shutil.rmtree(self.temp_dir)
+
+    def test_upsert_and_get_folder(self) -> None:
+        folder = FolderRecord(folder_id="folder-1", folder_name="Travel")
+        result = self.db.upsert_folder(folder)
+        assert result.operation == UpsertResult.INSERTED
+        assert result.record.folder_name == "Travel"
+        assert result.record.folder_id == "folder-1"
+
+    def test_upsert_folder_update(self) -> None:
+        self.db.upsert_folder(FolderRecord(folder_id="f1", folder_name="Old"))
+        result = self.db.upsert_folder(FolderRecord(folder_id="f1", folder_name="New"))
+        assert result.operation == UpsertResult.UPDATED
+        assert result.record.folder_name == "New"
+
+    def test_nested_folders(self) -> None:
+        self.db.upsert_folder(FolderRecord(folder_id="parent", folder_name="Parent"))
+        self.db.upsert_folder(
+            FolderRecord(folder_id="child", folder_name="Child", parent_folder_id="parent")
+        )
+        ids = self.db.get_all_folder_ids()
+        assert set(ids) == {"parent", "child"}
+
+    def test_mark_folder_deleted(self) -> None:
+        self.db.upsert_folder(FolderRecord(folder_id="f1", folder_name="Gone"))
+        self.db.mark_folder_deleted("f1", "2024-01-01T00:00:00Z")
+        assert self.db.get_all_folder_ids() == []
+
+    def test_upsert_resurrects_deleted_folder(self) -> None:
+        self.db.upsert_folder(FolderRecord(folder_id="f1", folder_name="F"))
+        self.db.mark_folder_deleted("f1", "2024-01-01T00:00:00Z")
+        assert self.db.get_all_folder_ids() == []
+        self.db.upsert_folder(FolderRecord(folder_id="f1", folder_name="F"))
+        assert self.db.get_all_folder_ids() == ["f1"]
+
+
+class TestAlbumDatabase:
+    """Test album and album_assets table operations."""
+
+    def setup_method(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.db = PhotoDatabase(Path(self.temp_dir))
+
+    def teardown_method(self) -> None:
+        shutil.rmtree(self.temp_dir)
+
+    def test_upsert_and_get_album(self) -> None:
+        album = AlbumRecord(
+            album_id="user:abc", album_name="Vacation", album_type="user"
+        )
+        result = self.db.upsert_album(album)
+        assert result.operation == UpsertResult.INSERTED
+        assert result.record.album_name == "Vacation"
+
+    def test_upsert_album_update(self) -> None:
+        self.db.upsert_album(
+            AlbumRecord(album_id="user:abc", album_name="Old", album_type="user")
+        )
+        result = self.db.upsert_album(
+            AlbumRecord(album_id="user:abc", album_name="New", album_type="user")
+        )
+        assert result.operation == UpsertResult.UPDATED
+        assert result.record.album_name == "New"
+
+    def test_smart_album(self) -> None:
+        album = AlbumRecord(
+            album_id="smart:Favorites", album_name="Favorites", album_type="smart"
+        )
+        result = self.db.upsert_album(album)
+        assert result.operation == UpsertResult.INSERTED
+
+    def test_album_with_folder(self) -> None:
+        self.db.upsert_folder(FolderRecord(folder_id="f1", folder_name="Folder"))
+        album = AlbumRecord(
+            album_id="user:a1", album_name="Inside", album_type="user", folder_id="f1"
+        )
+        result = self.db.upsert_album(album)
+        assert result.record.folder_id == "f1"
+
+    def test_replace_album_assets(self) -> None:
+        self.db.upsert_album(
+            AlbumRecord(album_id="a1", album_name="Test", album_type="user")
+        )
+        # Insert assets so FK is satisfied
+        for aid in ["asset1", "asset2", "asset3"]:
+            self.db.upsert_icloud_metadata(
+                ICloudAssetRecord(asset_id=aid, filename=f"{aid}.jpg")
+            )
+        count = self.db.replace_album_assets("a1", ["asset1", "asset2", "asset3"])
+        assert count == 3
+        assert self.db.get_album_assets("a1") == ["asset1", "asset2", "asset3"]
+
+    def test_replace_album_assets_replaces_previous(self) -> None:
+        self.db.upsert_album(
+            AlbumRecord(album_id="a1", album_name="Test", album_type="user")
+        )
+        for aid in ["asset1", "asset2", "asset3"]:
+            self.db.upsert_icloud_metadata(
+                ICloudAssetRecord(asset_id=aid, filename=f"{aid}.jpg")
+            )
+        self.db.replace_album_assets("a1", ["asset1", "asset2"])
+        self.db.replace_album_assets("a1", ["asset2", "asset3"])
+        assert self.db.get_album_assets("a1") == ["asset2", "asset3"]
+
+    def test_get_asset_albums(self) -> None:
+        for album_id in ["a1", "a2"]:
+            self.db.upsert_album(
+                AlbumRecord(album_id=album_id, album_name=album_id, album_type="user")
+            )
+        self.db.upsert_icloud_metadata(
+            ICloudAssetRecord(asset_id="shared", filename="shared.jpg")
+        )
+        self.db.replace_album_assets("a1", ["shared"])
+        self.db.replace_album_assets("a2", ["shared"])
+        assert set(self.db.get_asset_albums("shared")) == {"a1", "a2"}
+
+    def test_mark_album_deleted_cleans_membership(self) -> None:
+        self.db.upsert_album(
+            AlbumRecord(album_id="a1", album_name="Gone", album_type="user")
+        )
+        self.db.upsert_icloud_metadata(
+            ICloudAssetRecord(asset_id="x", filename="x.jpg")
+        )
+        self.db.replace_album_assets("a1", ["x"])
+        self.db.mark_album_deleted("a1", "2024-01-01T00:00:00Z")
+        assert self.db.get_all_album_ids() == []
+        assert self.db.get_album_assets("a1") == []
+
+    def test_mark_asset_deleted_cascades_to_album_assets(self) -> None:
+        self.db.upsert_album(
+            AlbumRecord(album_id="a1", album_name="Test", album_type="user")
+        )
+        self.db.upsert_icloud_metadata(
+            ICloudAssetRecord(asset_id="x", filename="x.jpg")
+        )
+        self.db.replace_album_assets("a1", ["x"])
+        self.db.mark_asset_deleted("x", "2024-01-01T00:00:00Z")
+        assert self.db.get_album_assets("a1") == []
+
+    def test_album_count(self) -> None:
+        self.db.upsert_album(
+            AlbumRecord(album_id="a1", album_name="One", album_type="user")
+        )
+        self.db.upsert_album(
+            AlbumRecord(album_id="a2", album_name="Two", album_type="smart")
+        )
+        assert self.db.get_album_count() == 2
+        self.db.mark_album_deleted("a1", "2024-01-01T00:00:00Z")
+        assert self.db.get_album_count() == 1
+
+
+class TestDeriveAlbumId:
+    """Test album ID derivation logic."""
+
+    def test_user_album(self) -> None:
+        album = Mock()
+        album.record_name = "abc-123"
+        assert SyncManager._derive_album_id("MyAlbum", album) == "user:abc-123"
+
+    def test_smart_album(self) -> None:
+        album = Mock()
+        album.record_name = None
+        assert SyncManager._derive_album_id("Favorites", album) == "smart:Favorites"
+
+    def test_smart_album_with_spaces(self) -> None:
+        album = Mock()
+        album.record_name = None
+        assert SyncManager._derive_album_id("Recently Deleted", album) == "smart:RecentlyDeleted"

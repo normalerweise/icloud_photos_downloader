@@ -76,6 +76,45 @@ class SyncStatus:
     error_message: str | None = None
 
 
+@dataclass
+class FolderRecord:
+    """A folder in the iCloud Photos folder hierarchy."""
+    folder_id: str  # iCloud recordName (UUID)
+    folder_name: str
+    parent_folder_id: str | None = None
+    position: int | None = None
+    last_sync_date: str | None = None
+    inserted_date: str | None = None
+    deleted: bool = False
+    deletion_detected_on: str | None = None
+
+
+class FolderUpsertResult(NamedTuple):
+    record: FolderRecord
+    operation: UpsertResult
+
+
+@dataclass
+class AlbumRecord:
+    """An album (leaf node containing assets) in the iCloud Photos hierarchy."""
+    album_id: str  # iCloud recordName (UUID) or 'smart:<key>'
+    album_name: str
+    album_type: str  # 'smart' or 'user'
+    folder_id: str | None = None  # parent folder, None for top-level/smart
+    obj_type: str | None = None
+    list_type: str | None = None
+    position: int | None = None
+    last_sync_date: str | None = None
+    inserted_date: str | None = None
+    deleted: bool = False
+    deletion_detected_on: str | None = None
+
+
+class AlbumUpsertResult(NamedTuple):
+    record: AlbumRecord
+    operation: UpsertResult
+
+
 class PhotoDatabase:
     """SQLite database for tracking photo assets and download status."""
 
@@ -144,9 +183,57 @@ class PhotoDatabase:
                 )
             """)
 
+            # Folders table (tree structure via self-referencing parent)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS folders (
+                    folder_id TEXT PRIMARY KEY,
+                    folder_name TEXT NOT NULL,
+                    parent_folder_id TEXT,
+                    position INTEGER,
+                    last_sync_date DATETIME,
+                    inserted_date DATETIME,
+                    deleted BOOLEAN DEFAULT FALSE,
+                    deletion_detected_on DATETIME,
+                    FOREIGN KEY (parent_folder_id) REFERENCES folders(folder_id)
+                )
+            """)
+
+            # Albums table (leaf nodes containing assets)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS albums (
+                    album_id TEXT PRIMARY KEY,
+                    album_name TEXT NOT NULL,
+                    album_type TEXT NOT NULL,
+                    folder_id TEXT,
+                    obj_type TEXT,
+                    list_type TEXT,
+                    position INTEGER,
+                    last_sync_date DATETIME,
+                    inserted_date DATETIME,
+                    deleted BOOLEAN DEFAULT FALSE,
+                    deletion_detected_on DATETIME,
+                    FOREIGN KEY (folder_id) REFERENCES folders(folder_id)
+                )
+            """)
+
+            # Album-asset membership (junction table)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS album_assets (
+                    album_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    position INTEGER,
+                    PRIMARY KEY (album_id, asset_id),
+                    FOREIGN KEY (album_id) REFERENCES albums(album_id),
+                    FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
+                )
+            """)
+
             # Create indexes for better performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_status ON sync_status(sync_status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_local_files_asset_id ON local_files(asset_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_folder_id ON albums(folder_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_album_assets_asset_id ON album_assets(asset_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_album_assets_album_id ON album_assets(album_id)")
 
             conn.commit()
 
@@ -471,6 +558,7 @@ class PhotoDatabase:
             )
             conn.execute("DELETE FROM sync_status WHERE asset_id = ?", (asset_id,))
             conn.execute("DELETE FROM local_files WHERE asset_id = ?", (asset_id,))
+            conn.execute("DELETE FROM album_assets WHERE asset_id = ?", (asset_id,))
             conn.commit()
 
     def get_deleted_asset_count(self) -> int:
@@ -513,6 +601,193 @@ class PhotoDatabase:
                 WHERE lf.asset_id IS NULL
                   AND ss.sync_status = 'metadata_processed'
             """)
+            return cursor.fetchone()[0]
+
+    # -- Folder methods ---------------------------------------------------------
+
+    def upsert_folder(self, folder: FolderRecord) -> FolderUpsertResult:
+        """Insert or update a folder record."""
+        if folder.inserted_date is None:
+            folder.inserted_date = datetime.now().isoformat()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO folders (
+                    folder_id, folder_name, parent_folder_id, position,
+                    last_sync_date, inserted_date
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(folder_id) DO UPDATE SET
+                    folder_name = excluded.folder_name,
+                    parent_folder_id = excluded.parent_folder_id,
+                    position = excluded.position,
+                    last_sync_date = excluded.last_sync_date,
+                    deleted = FALSE,
+                    deletion_detected_on = NULL
+                RETURNING folder_id, folder_name, parent_folder_id, position,
+                          last_sync_date, inserted_date, deleted, deletion_detected_on
+                """,
+                (
+                    folder.folder_id,
+                    folder.folder_name,
+                    folder.parent_folder_id,
+                    folder.position,
+                    datetime.now().isoformat(),
+                    folder.inserted_date,
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("No row returned from folder upsert")
+
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            returned = FolderRecord(**data)
+
+            operation = (
+                UpsertResult.INSERTED
+                if returned.inserted_date == folder.inserted_date
+                else UpsertResult.UPDATED
+            )
+            conn.commit()
+            return FolderUpsertResult(record=returned, operation=operation)
+
+    def get_all_folder_ids(self) -> list[str]:
+        """Get all non-deleted folder IDs."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT folder_id FROM folders WHERE deleted = FALSE OR deleted IS NULL"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def mark_folder_deleted(self, folder_id: str, detected_on: str) -> None:
+        """Tombstone a folder and remove its album_assets via child albums."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE folders SET deleted = TRUE, deletion_detected_on = ? WHERE folder_id = ?",
+                (detected_on, folder_id),
+            )
+            conn.commit()
+
+    # -- Album methods ----------------------------------------------------------
+
+    def upsert_album(self, album: AlbumRecord) -> AlbumUpsertResult:
+        """Insert or update an album record."""
+        if album.inserted_date is None:
+            album.inserted_date = datetime.now().isoformat()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO albums (
+                    album_id, album_name, album_type, folder_id,
+                    obj_type, list_type, position,
+                    last_sync_date, inserted_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(album_id) DO UPDATE SET
+                    album_name = excluded.album_name,
+                    album_type = excluded.album_type,
+                    folder_id = excluded.folder_id,
+                    obj_type = excluded.obj_type,
+                    list_type = excluded.list_type,
+                    position = excluded.position,
+                    last_sync_date = excluded.last_sync_date,
+                    deleted = FALSE,
+                    deletion_detected_on = NULL
+                RETURNING album_id, album_name, album_type, folder_id,
+                          obj_type, list_type, position,
+                          last_sync_date, inserted_date, deleted, deletion_detected_on
+                """,
+                (
+                    album.album_id,
+                    album.album_name,
+                    album.album_type,
+                    album.folder_id,
+                    album.obj_type,
+                    album.list_type,
+                    album.position,
+                    datetime.now().isoformat(),
+                    album.inserted_date,
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("No row returned from album upsert")
+
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            returned = AlbumRecord(**data)
+
+            operation = (
+                UpsertResult.INSERTED
+                if returned.inserted_date == album.inserted_date
+                else UpsertResult.UPDATED
+            )
+            conn.commit()
+            return AlbumUpsertResult(record=returned, operation=operation)
+
+    def get_all_album_ids(self) -> list[str]:
+        """Get all non-deleted album IDs."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT album_id FROM albums WHERE deleted = FALSE OR deleted IS NULL"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def mark_album_deleted(self, album_id: str, detected_on: str) -> None:
+        """Tombstone an album and remove its membership rows."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE albums SET deleted = TRUE, deletion_detected_on = ? WHERE album_id = ?",
+                (detected_on, album_id),
+            )
+            conn.execute("DELETE FROM album_assets WHERE album_id = ?", (album_id,))
+            conn.commit()
+
+    def replace_album_assets(self, album_id: str, asset_ids: list[str]) -> int:
+        """Full-replace membership for an album. Returns count of inserted rows."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM album_assets WHERE album_id = ?", (album_id,))
+            for position, asset_id in enumerate(asset_ids):
+                conn.execute(
+                    "INSERT OR IGNORE INTO album_assets (album_id, asset_id, position) VALUES (?, ?, ?)",
+                    (album_id, asset_id, position),
+                )
+            conn.commit()
+            return len(asset_ids)
+
+    def get_album_assets(self, album_id: str) -> list[str]:
+        """Get all asset IDs belonging to an album, ordered by position."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT asset_id FROM album_assets WHERE album_id = ? ORDER BY position",
+                (album_id,),
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_asset_albums(self, asset_id: str) -> list[str]:
+        """Get all album IDs that contain a given asset."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT album_id FROM album_assets WHERE asset_id = ?",
+                (asset_id,),
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_album_count(self) -> int:
+        """Get total number of non-deleted albums."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM albums WHERE deleted = FALSE OR deleted IS NULL"
+            )
+            return cursor.fetchone()[0]
+
+    def get_folder_count(self) -> int:
+        """Get total number of non-deleted folders."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM folders WHERE deleted = FALSE OR deleted IS NULL"
+            )
             return cursor.fetchone()[0]
 
     # Legacy compatibility methods for transition

@@ -5,12 +5,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from pyicloud_ipd.services.photos import PhotoAsset
+from pyicloud_ipd.services.photos import (
+    PhotoAlbum,
+    PhotoAsset,
+    PhotoFolder,
+    PhotoLibrary,
+)
 from pyicloud_ipd.session import PyiCloudSession
 from pyicloud_ipd.version_size import VersionSize
 
 from .constants import DOWNLOAD_VERSIONS
 from .database import (
+    AlbumRecord,
+    FolderRecord,
     ICloudAssetRecord,
     LocalFileRecord,
     PhotoDatabase,
@@ -33,9 +40,11 @@ class SyncManager:
         self,
         base_directory: Path,
         session: PyiCloudSession,
+        photo_library: PhotoLibrary | None = None,
         progress_reporter: ProgressReporter | None = None,
     ):
         self.base_directory = Path(base_directory)
+        self.photo_library = photo_library
         self.progress_reporter = progress_reporter or TerminalProgressReporter()
 
         self.database = PhotoDatabase(self.base_directory)
@@ -53,6 +62,9 @@ class SyncManager:
             logger.info(f"Cleaned up {cleaned_count} incomplete downloads")
 
         phase1_stats, asset_map = self._phase1_metadata_collection(photos_to_sync)
+
+        if self.photo_library is not None:
+            self._phase4_album_sync(self.photo_library)
 
         if photos_to_sync.covers_full_library:
             self._phase3_mirror_deletions(asset_map)
@@ -314,6 +326,111 @@ class SyncManager:
 
         self._deleted_count = len(deleted_ids)
         logger.info(f"Phase 3 completed: {self._deleted_count} assets removed (deleted from iCloud)")
+
+    # -- Phase 4: Album and folder sync ------------------------------------------
+
+    def _phase4_album_sync(self, photo_library: PhotoLibrary) -> dict[str, Any]:
+        """Sync folders, albums, and album membership from iCloud."""
+        logger.info("Phase 4: Starting album and folder sync...")
+
+        folder_tree = photo_library.folders
+        albums_dict = photo_library.albums
+
+        synced_folder_ids = self._sync_folder_tree(folder_tree)
+        synced_album_ids, total_memberships = self._sync_albums(albums_dict)
+        deleted_folders = self._detect_folder_deletions(synced_folder_ids)
+        deleted_albums = self._detect_album_deletions(synced_album_ids)
+
+        stats = {
+            "folders": len(synced_folder_ids),
+            "albums": len(synced_album_ids),
+            "memberships": total_memberships,
+            "deleted_folders": deleted_folders,
+            "deleted_albums": deleted_albums,
+        }
+        logger.info(
+            f"Phase 4 completed: {len(synced_folder_ids)} folders, "
+            f"{len(synced_album_ids)} albums, {total_memberships} memberships"
+        )
+        return stats
+
+    def _sync_folder_tree(self, folders: list[PhotoFolder]) -> set[str]:
+        """Recursively upsert folders and return all synced folder IDs."""
+        synced_ids: set[str] = set()
+        for folder in folders:
+            self.database.upsert_folder(
+                FolderRecord(
+                    folder_id=folder.record_name,
+                    folder_name=folder.name,
+                    parent_folder_id=folder.parent_id,
+                )
+            )
+            synced_ids.add(folder.record_name)
+            synced_ids.update(self._sync_folder_tree(folder.children_folders))
+        return synced_ids
+
+    def _sync_albums(
+        self, albums_dict: dict[str, PhotoAlbum]
+    ) -> tuple[set[str], int]:
+        """Upsert albums and sync their asset membership."""
+        synced_ids: set[str] = set()
+        total_memberships = 0
+
+        total_albums = len(albums_dict)
+        self.progress_reporter.phase_start("Phase 4: Album sync", total_albums)
+
+        for i, (name, album) in enumerate(albums_dict.items()):
+            album_id = self._derive_album_id(name, album)
+            album_type = "user" if album.record_name is not None else "smart"
+
+            self.database.upsert_album(
+                AlbumRecord(
+                    album_id=album_id,
+                    album_name=name,
+                    album_type=album_type,
+                    folder_id=album.parent_folder_id,
+                    obj_type=album.obj_type,
+                    list_type=album.list_type,
+                )
+            )
+            synced_ids.add(album_id)
+
+            if album_type == "user":
+                asset_ids = [asset.id for asset in album]
+                count = self.database.replace_album_assets(album_id, asset_ids)
+                total_memberships += count
+
+            self.progress_reporter.phase_progress(i + 1, total_albums)
+
+        self.progress_reporter.phase_complete("Phase 4: Album sync", {})
+        return synced_ids, total_memberships
+
+    def _detect_folder_deletions(self, synced_ids: set[str]) -> int:
+        """Tombstone folders no longer present in iCloud."""
+        existing_ids = set(self.database.get_all_folder_ids())
+        deleted_ids = existing_ids - synced_ids
+        detected_on = datetime.now(timezone.utc).isoformat()
+        for folder_id in deleted_ids:
+            self.database.mark_folder_deleted(folder_id, detected_on)
+        return len(deleted_ids)
+
+    def _detect_album_deletions(self, synced_ids: set[str]) -> int:
+        """Tombstone albums no longer present in iCloud."""
+        existing_ids = set(self.database.get_all_album_ids())
+        deleted_ids = existing_ids - synced_ids
+        detected_on = datetime.now(timezone.utc).isoformat()
+        for album_id in deleted_ids:
+            self.database.mark_album_deleted(album_id, detected_on)
+        return len(deleted_ids)
+
+    @staticmethod
+    def _derive_album_id(name: str, album: PhotoAlbum) -> str:
+        """Derive a stable unique ID for a PhotoAlbum."""
+        record_name = album.record_name
+        if record_name is not None:
+            return f"user:{record_name}"
+        smart_key = name.replace(" ", "")
+        return f"smart:{smart_key}"
 
     # -- Helpers ----------------------------------------------------------------
 

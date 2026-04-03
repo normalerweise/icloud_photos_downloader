@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import typing
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, Generator, Sequence, Tuple, cast
 from urllib.parse import urlencode
@@ -163,6 +164,42 @@ def apply_raw_policy(
     return result_versions
 
 
+ALBUM_TYPE_FOLDER = 3
+ALBUM_TYPE_ALBUM = 0
+
+_ROOT_FOLDER_NAMES = frozenset({"----Root-Folder----", "----Project-Root-Folder----"})
+
+
+def _decode_album_name(record: Dict[str, Any]) -> str:
+    """Decode the base64-encoded album name from a CPLAlbum record."""
+    enc = record.get("fields", {}).get("albumNameEnc", {}).get("value", "")
+    if not enc:
+        return ""
+    return base64.b64decode(enc).decode("utf-8")
+
+
+def _is_skippable_record(record: Dict[str, Any]) -> bool:
+    """Check if a CPLAlbum record should be skipped (root folders, deleted)."""
+    if record["recordName"] in _ROOT_FOLDER_NAMES:
+        return True
+    fields = record.get("fields", {})
+    return bool(fields.get("isDeleted", {}).get("value"))
+
+
+@dataclass
+class PhotoFolder:
+    """A folder in the iCloud Photos folder hierarchy.
+
+    Folders form a tree. Their children are other folders or albums (never assets directly).
+    """
+
+    record_name: str
+    name: str
+    parent_id: str | None = None
+    children_folders: list["PhotoFolder"] = field(default_factory=list)
+    children_albums: list["PhotoAlbum"] = field(default_factory=list)
+
+
 class PhotoLibrary:
     """Represents a library in the user's photos.
 
@@ -302,7 +339,8 @@ class PhotoLibrary:
 
     @property
     def albums(self) -> Dict[str, "PhotoAlbum"]:
-        albums = {
+        """Return all albums (smart + user-created), including those nested in folders."""
+        albums: Dict[str, PhotoAlbum] = {
             name: PhotoAlbum(
                 self.params,
                 self.session,
@@ -314,55 +352,102 @@ class PhotoLibrary:
             for (name, props) in self.SMART_FOLDERS.items()
         }
 
-        for folder in self._fetch_folders():
-            # FIXME: Handle subfolders
-            if folder["recordName"] in ("----Root-Folder----", "----Project-Root-Folder----") or (
-                folder["fields"].get("isDeleted") and folder["fields"]["isDeleted"]["value"]
-            ):
-                continue
-
-            folder_id = folder["recordName"]
-            folder_obj_type = f"CPLContainerRelationNotDeletedByAssetDate:{folder_id}"
-            folder_name = base64.b64decode(folder["fields"]["albumNameEnc"]["value"]).decode(
-                "utf-8"
-            )
-            query_filter = [
-                {
-                    "fieldName": "parentId",
-                    "comparator": "EQUALS",
-                    "fieldValue": {"type": "STRING", "value": folder_id},
-                }
-            ]
-
-            album = PhotoAlbum(
-                self.params,
-                self.session,
-                self.service_endpoint,
-                folder_name,
-                "CPLContainerRelationLiveByAssetDate",
-                folder_obj_type,
-                query_filter,
-                zone_id=self.zone_id,
-            )
-            albums[folder_name] = album
-
+        top_level_records = self._fetch_album_records()
+        _folders, user_albums = self._build_folder_tree(top_level_records, parent_id=None)
+        albums.update(user_albums)
         return albums
 
-    def _fetch_folders(self) -> Sequence[Dict[str, Any]]:
+    @property
+    def folders(self) -> list[PhotoFolder]:
+        """Return the folder tree (top-level folders with recursive children)."""
+        top_level_records = self._fetch_album_records()
+        folder_tree, _albums = self._build_folder_tree(top_level_records, parent_id=None)
+        return folder_tree
+
+    def _fetch_album_records(
+        self, parent_id: str | None = None
+    ) -> Sequence[Dict[str, Any]]:
+        """Fetch CPLAlbum records from iCloud.
+
+        Without parent_id: returns top-level folders and albums.
+        With parent_id: returns children of that folder.
+        """
         if self.library_type == "shared":
             return []
         url = f"{self.service_endpoint}/records/query?{urlencode(self.params)}"
-        json_data = json.dumps(
-            {
-                "query": {"recordType": "CPLAlbumByPositionLive"},
-                "zoneID": self.zone_id,
-            }
-        )
 
+        query: Dict[str, Any] = {"recordType": "CPLAlbumByPositionLive"}
+        if parent_id is not None:
+            query["filterBy"] = [
+                {
+                    "fieldName": "parentId",
+                    "comparator": "EQUALS",
+                    "fieldValue": {"type": "STRING", "value": parent_id},
+                }
+            ]
+
+        json_data = json.dumps({"query": query, "zoneID": self.zone_id})
         request = self.session.post(url, data=json_data, headers={"Content-type": "text/plain"})
         response = request.json()
-
         return typing.cast(Sequence[Dict[str, Any]], response["records"])
+
+    def _build_folder_tree(
+        self,
+        records: Sequence[Dict[str, Any]],
+        parent_id: str | None,
+    ) -> tuple[list[PhotoFolder], Dict[str, "PhotoAlbum"]]:
+        """Recursively process CPLAlbum records into folders and albums."""
+        folders: list[PhotoFolder] = []
+        albums: Dict[str, PhotoAlbum] = {}
+
+        for record in records:
+            if _is_skippable_record(record):
+                continue
+
+            fields = record.get("fields", {})
+            album_type = fields.get("albumType", {}).get("value", ALBUM_TYPE_ALBUM)
+            record_name = record["recordName"]
+            name = _decode_album_name(record)
+
+            if album_type == ALBUM_TYPE_FOLDER:
+                children_records = self._fetch_album_records(parent_id=record_name)
+                child_folders, child_albums = self._build_folder_tree(
+                    children_records, parent_id=record_name
+                )
+                folder = PhotoFolder(
+                    record_name=record_name,
+                    name=name,
+                    parent_id=parent_id,
+                    children_folders=child_folders,
+                    children_albums=list(child_albums.values()),
+                )
+                folders.append(folder)
+                albums.update(child_albums)
+            else:
+                album_obj_type = (
+                    f"CPLContainerRelationNotDeletedByAssetDate:{record_name}"
+                )
+                query_filter = [
+                    {
+                        "fieldName": "parentId",
+                        "comparator": "EQUALS",
+                        "fieldValue": {"type": "STRING", "value": record_name},
+                    }
+                ]
+                album = PhotoAlbum(
+                    self.params,
+                    self.session,
+                    self.service_endpoint,
+                    name,
+                    "CPLContainerRelationLiveByAssetDate",
+                    album_obj_type,
+                    query_filter,
+                    zone_id=self.zone_id,
+                    parent_folder_id=parent_id,
+                )
+                albums[name] = album
+
+        return folders, albums
 
     @property
     def all(self) -> "PhotoAlbum":
@@ -476,6 +561,7 @@ class PhotoAlbum:
         query_filter: Sequence[Dict[str, Any]] | None = None,
         page_size: int = 100,
         zone_id: Dict[str, Any] | None = None,
+        parent_folder_id: str | None = None,
     ):
         self.name = name
         self.params = params
@@ -486,6 +572,7 @@ class PhotoAlbum:
         self.offset = 0
         self.query_filter = query_filter
         self.page_size = page_size
+        self.parent_folder_id = parent_folder_id
 
         if zone_id:
             self._zone_id: Dict[str, Any] = zone_id
@@ -495,6 +582,14 @@ class PhotoAlbum:
     @property
     def title(self) -> str:
         return self.name
+
+    @property
+    def record_name(self) -> str | None:
+        """Extract the iCloud recordName from obj_type for user albums."""
+        prefix = "CPLContainerRelationNotDeletedByAssetDate:"
+        if self.obj_type.startswith(prefix):
+            return self.obj_type[len(prefix):]
+        return None
 
     def __iter__(self) -> Generator["PhotoAsset", Any, None]:
         return self.photos
