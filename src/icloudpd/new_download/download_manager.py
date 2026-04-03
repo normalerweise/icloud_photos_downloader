@@ -153,7 +153,9 @@ class DownloadManager:
         try:
             response = icloud_asset.download(self.session, url)
             response.raise_for_status()
-            return self.file_manager.save_file_from_stream(file_path, response.raw)
+            return self.file_manager.save_file_from_stream(
+                file_path, response.raw, overwrite=True
+            )
         except Exception as e:
             logger.error(f"Download failed for {file_path.name}: {e}")
             return False
