@@ -27,3 +27,4 @@ node_modules/
 .cookies/
 
 .claude/
+test_library
