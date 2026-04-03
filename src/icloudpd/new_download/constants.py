@@ -24,3 +24,7 @@ DOWNLOAD_VERSIONS = [
 
 # Supported file extensions for live photos
 LIVE_PHOTO_EXTENSIONS = [".mov", ".mp4"]
+
+# Filesystem sync directories
+LIBRARY_DIRECTORY = "Library"
+ALBUMS_DIRECTORY = "Albums"

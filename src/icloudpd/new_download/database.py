@@ -790,6 +790,98 @@ class PhotoDatabase:
             )
             return cursor.fetchone()[0]
 
+    # -- Bulk queries for filesystem sync ----------------------------------------
+
+    def get_all_non_deleted_albums(self) -> list[AlbumRecord]:
+        """Get all non-deleted album records (full objects)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM albums WHERE deleted = FALSE OR deleted IS NULL"
+            )
+            return [AlbumRecord(**dict(row)) for row in cursor.fetchall()]
+
+    def get_all_non_deleted_folders(self) -> list[FolderRecord]:
+        """Get all non-deleted folder records (full objects)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM folders WHERE deleted = FALSE OR deleted IS NULL"
+            )
+            return [FolderRecord(**dict(row)) for row in cursor.fetchall()]
+
+    def get_all_downloaded_assets(
+        self,
+    ) -> list[tuple[ICloudAssetRecord, list[LocalFileRecord]]]:
+        """Get all non-deleted assets that have at least one local file."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            rows = conn.execute("""
+                SELECT a.*, lf.version_type AS lf_version_type,
+                       lf.local_filename AS lf_local_filename,
+                       lf.file_path AS lf_file_path,
+                       lf.file_size AS lf_file_size,
+                       lf.download_date AS lf_download_date,
+                       lf.checksum AS lf_checksum
+                FROM icloud_assets a
+                JOIN local_files lf ON a.asset_id = lf.asset_id
+                WHERE (a.deleted = FALSE OR a.deleted IS NULL)
+                ORDER BY a.asset_id, lf.version_type
+            """).fetchall()
+
+            result: list[tuple[ICloudAssetRecord, list[LocalFileRecord]]] = []
+            current_asset: ICloudAssetRecord | None = None
+            current_files: list[LocalFileRecord] = []
+
+            for row in rows:
+                row_dict = dict(row)
+                asset_id = row_dict["asset_id"]
+
+                if current_asset is None or current_asset.asset_id != asset_id:
+                    if current_asset is not None:
+                        result.append((current_asset, current_files))
+                    current_asset = self._row_to_asset_record(row_dict)
+                    current_files = []
+
+                current_files.append(
+                    LocalFileRecord(
+                        asset_id=asset_id,
+                        version_type=row_dict["lf_version_type"],
+                        local_filename=row_dict["lf_local_filename"],
+                        file_path=row_dict["lf_file_path"],
+                        file_size=row_dict["lf_file_size"],
+                        download_date=row_dict["lf_download_date"],
+                        checksum=row_dict["lf_checksum"],
+                    )
+                )
+
+            if current_asset is not None:
+                result.append((current_asset, current_files))
+
+            return result
+
+    @staticmethod
+    def _row_to_asset_record(row_dict: dict[str, Any]) -> ICloudAssetRecord:
+        """Convert a joined row dict to ICloudAssetRecord."""
+        return ICloudAssetRecord(
+            asset_id=row_dict["asset_id"],
+            filename=row_dict["filename"],
+            asset_type=row_dict.get("asset_type"),
+            asset_subtype=row_dict.get("asset_subtype"),
+            created_date=row_dict.get("created_date"),
+            added_date=row_dict.get("added_date"),
+            width=row_dict.get("width"),
+            height=row_dict.get("height"),
+            asset_versions=json.loads(row_dict.get("asset_versions") or "{}"),
+            master_record=json.loads(row_dict.get("master_record") or "{}"),
+            asset_record=json.loads(row_dict.get("asset_record") or "{}"),
+            last_metadata_update=row_dict.get("last_metadata_update"),
+            metadata_inserted_date=row_dict.get("metadata_inserted_date"),
+            deleted=bool(row_dict.get("deleted")),
+            deletion_detected_on=row_dict.get("deletion_detected_on"),
+        )
+
     # Legacy compatibility methods for transition
     def get_asset(self, asset_id: str) -> Dict[str, Any] | None:
         """Legacy method to get asset data in old format.

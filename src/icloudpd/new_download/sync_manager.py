@@ -75,6 +75,8 @@ class SyncManager:
 
         self._phase4_download_assets(asset_map)
 
+        self._phase5_filesystem_sync()
+
         final_stats = self._get_sync_stats()
         self.progress_reporter.sync_complete(final_stats)
         return final_stats
@@ -444,6 +446,25 @@ class SyncManager:
             return f"user:{record_name}"
         smart_key = name.replace(" ", "")
         return f"smart:{smart_key}"
+
+    # -- Phase 5: Filesystem sync ------------------------------------------------
+
+    def _phase5_filesystem_sync(self) -> dict[str, Any]:
+        """Phase 5: Create browsable symlink structure from database state."""
+        logger.info("Phase 5: Syncing filesystem structure...")
+        self.progress_reporter.phase_start("Phase 5: Filesystem sync", 0)
+
+        from .filesystem_sync import FilesystemSync
+
+        fs_sync = FilesystemSync(self.base_directory, self.database)
+        stats = fs_sync.sync_filesystem()
+
+        self.progress_reporter.phase_complete("Phase 5: Filesystem sync", stats)
+        logger.info(
+            f"Phase 5 completed: {stats.get('created', 0)} created, "
+            f"{stats.get('removed', 0)} removed, {stats.get('updated', 0)} updated"
+        )
+        return stats
 
     # -- Helpers ----------------------------------------------------------------
 
