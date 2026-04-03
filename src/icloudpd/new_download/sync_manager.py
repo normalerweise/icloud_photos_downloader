@@ -64,14 +64,14 @@ class SyncManager:
         phase1_stats, asset_map = self._phase1_metadata_collection(photos_to_sync)
 
         if self.photo_library is not None:
-            self._phase4_album_sync(self.photo_library)
+            self._phase2_album_sync(self.photo_library)
 
         if photos_to_sync.covers_full_library:
             self._phase3_mirror_deletions(asset_map)
         else:
             logger.debug("Skipping deletion detection: strategy does not cover full library.")
 
-        self._phase2_download_assets(asset_map)
+        self._phase4_download_assets(asset_map)
 
         final_stats = self._get_sync_stats()
         self.progress_reporter.sync_complete(final_stats)
@@ -164,11 +164,11 @@ class SyncManager:
 
         return sync_statuses
 
-    # -- Phase 2: Download assets -----------------------------------------------
+    # -- Phase 4: Download assets -----------------------------------------------
 
-    def _phase2_download_assets(self, asset_map: Dict[str, PhotoAsset]) -> Dict[str, Any]:
+    def _phase4_download_assets(self, asset_map: Dict[str, PhotoAsset]) -> Dict[str, Any]:
         """Download assets that have metadata_processed status."""
-        logger.info("Phase 2: Starting asset downloads...")
+        logger.info("Phase 4: Starting asset downloads...")
 
         assets_to_download = self.database.get_assets_needing_download()
         total_assets = len(assets_to_download)
@@ -177,7 +177,7 @@ class SyncManager:
             logger.info("No assets need downloading")
             return {"downloaded": 0, "failed": 0, "skipped": 0}
 
-        self.progress_reporter.phase_start("Phase 2: Downloading assets", total_assets)
+        self.progress_reporter.phase_start("Phase 4: Downloading assets", total_assets)
 
         downloaded_count = 0
         failed_count = 0
@@ -199,17 +199,17 @@ class SyncManager:
 
             self.progress_reporter.phase_progress(i + 1, total_assets)
 
-        phase2_stats = {
+        phase4_stats = {
             "downloaded": downloaded_count,
             "failed": failed_count,
             "skipped": skipped_count,
         }
-        self.progress_reporter.phase_complete("Phase 2: Downloading assets", phase2_stats)
+        self.progress_reporter.phase_complete("Phase 4: Downloading assets", phase4_stats)
         logger.info(
-            f"Phase 2 completed: {downloaded_count} downloaded, "
+            f"Phase 4 completed: {downloaded_count} downloaded, "
             f"{failed_count} failed, {skipped_count} skipped"
         )
-        return phase2_stats
+        return phase4_stats
 
     def _download_single_asset(self, asset_id: str, asset_map: Dict[str, PhotoAsset]) -> str:
         """Download all pending versions of a single asset.
@@ -327,11 +327,11 @@ class SyncManager:
         self._deleted_count = len(deleted_ids)
         logger.info(f"Phase 3 completed: {self._deleted_count} assets removed (deleted from iCloud)")
 
-    # -- Phase 4: Album and folder sync ------------------------------------------
+    # -- Phase 2: Album and folder sync ------------------------------------------
 
-    def _phase4_album_sync(self, photo_library: PhotoLibrary) -> dict[str, Any]:
+    def _phase2_album_sync(self, photo_library: PhotoLibrary) -> dict[str, Any]:
         """Sync folders, albums, and album membership from iCloud."""
-        logger.info("Phase 4: Starting album and folder sync...")
+        logger.info("Phase 2: Starting album and folder sync...")
 
         folder_tree = photo_library.folders
         albums_dict = photo_library.albums
@@ -349,7 +349,7 @@ class SyncManager:
             "deleted_albums": deleted_albums,
         }
         logger.info(
-            f"Phase 4 completed: {len(synced_folder_ids)} folders, "
+            f"Phase 2 completed: {len(synced_folder_ids)} folders, "
             f"{len(synced_album_ids)} albums, {total_memberships} memberships"
         )
         return stats
@@ -377,7 +377,7 @@ class SyncManager:
         total_memberships = 0
 
         total_albums = len(albums_dict)
-        self.progress_reporter.phase_start("Phase 4: Album sync", total_albums)
+        self.progress_reporter.phase_start("Phase 2: Album sync", total_albums)
 
         for i, (name, album) in enumerate(albums_dict.items()):
             album_id = self._derive_album_id(name, album)
@@ -402,7 +402,7 @@ class SyncManager:
 
             self.progress_reporter.phase_progress(i + 1, total_albums)
 
-        self.progress_reporter.phase_complete("Phase 4: Album sync", {})
+        self.progress_reporter.phase_complete("Phase 2: Album sync", {})
         return synced_ids, total_memberships
 
     def _detect_folder_deletions(self, synced_ids: set[str]) -> int:
