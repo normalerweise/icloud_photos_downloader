@@ -18,7 +18,11 @@ from icloudpd.new_download.database import (
 from icloudpd.new_download.file_manager import FileManager
 from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
 from icloudpd.new_download.sync_manager import SyncManager
-from icloudpd.new_download.sync_strategy import NoOpStrategy, RecentPhotosStrategy, SinceDateStrategy
+from icloudpd.new_download.sync_strategy import (
+    NoOpStrategy,
+    RecentPhotosStrategy,
+    SinceDateStrategy,
+)
 from pyicloud_ipd.asset_version import AssetVersion
 from pyicloud_ipd.item_type import AssetItemType
 from pyicloud_ipd.version_size import AssetVersionSize
@@ -265,8 +269,8 @@ class TestSyncManager:
         resolved = SyncManager._resolve_version_size("nonexistent", mock_asset)
         assert resolved is None
 
-    def test_phase3_removes_files_and_tombstones_db(self) -> None:
-        """Assets in DB but absent from asset_map are deleted locally and tombstoned."""
+    def test_phase3_tombstones_db_without_file_deletion(self) -> None:
+        """Assets in DB but absent from asset_map are tombstoned (DB only, no file I/O)."""
         db = self.sync_manager.database
         fm = self.sync_manager.file_manager
 
@@ -275,20 +279,18 @@ class TestSyncManager:
         db.upsert_icloud_metadata(ICloudAssetRecord(asset_id="gone-1", filename="gone.jpg"))
         db.upsert_icloud_metadata(ICloudAssetRecord(asset_id="gone-2", filename="gone2.jpg"))
 
-        # Write a fake local file for each deleted asset
+        # Write a fake local file for a deleted asset
         (fm.data_directory / "Z29uZS0x-original.jpg").write_bytes(b"data")
-        (fm.data_directory / "Z29uZS0y-original.jpg").write_bytes(b"data")
 
         # asset_map only contains "keep-1" — simulates iCloud after deletion
         asset_map = {"keep-1": _make_mock_asset("keep-1", "keep.jpg")}
 
-        self.sync_manager._phase3_mirror_deletions(asset_map)
+        self.sync_manager._phase3_reconcile_deletions(asset_map, set(), set())
 
         assert self.sync_manager._deleted_count == 2
 
-        # Local files removed
-        assert not (fm.data_directory / "Z29uZS0x-original.jpg").exists()
-        assert not (fm.data_directory / "Z29uZS0y-original.jpg").exists()
+        # Local files are NOT removed (Phase 3 is DB-only; Phase 5 will handle files)
+        assert (fm.data_directory / "Z29uZS0x-original.jpg").exists()
 
         # Tombstones in DB
         assert db.get_deleted_asset_count() == 2
@@ -311,7 +313,7 @@ class TestSyncManager:
         db.mark_asset_deleted("gone-1", detected_on)
 
         # Second run: asset still absent from iCloud
-        self.sync_manager._phase3_mirror_deletions({})
+        self.sync_manager._phase3_reconcile_deletions({}, set(), set())
 
         # Already tombstoned — not counted as a new deletion
         assert self.sync_manager._deleted_count == 0
@@ -321,7 +323,7 @@ class TestSyncManager:
         db.upsert_icloud_metadata(ICloudAssetRecord(asset_id="keep-1", filename="keep.jpg"))
 
         asset_map = {"keep-1": _make_mock_asset("keep-1", "keep.jpg")}
-        self.sync_manager._phase3_mirror_deletions(asset_map)
+        self.sync_manager._phase3_reconcile_deletions(asset_map, set(), set())
 
         assert self.sync_manager._deleted_count == 0
         assert db.get_deleted_asset_count() == 0

@@ -63,11 +63,13 @@ class SyncManager:
 
         phase1_stats, asset_map = self._phase1_metadata_collection(photos_to_sync)
 
+        synced_folder_ids: set[str] = set()
+        synced_album_ids: set[str] = set()
         if self.photo_library is not None:
-            self._phase2_album_sync(self.photo_library)
+            synced_folder_ids, synced_album_ids = self._phase2_album_sync(self.photo_library)
 
         if photos_to_sync.covers_full_library:
-            self._phase3_mirror_deletions(asset_map)
+            self._phase3_reconcile_deletions(asset_map, synced_folder_ids, synced_album_ids)
         else:
             logger.debug("Skipping deletion detection: strategy does not cover full library.")
 
@@ -310,27 +312,49 @@ class SyncManager:
                 )
             )
 
-    # -- Phase 3: Mirror deletions ----------------------------------------------
+    # -- Phase 3: Reconcile deletions (DB only) ----------------------------------
 
-    def _phase3_mirror_deletions(self, asset_map: Dict[str, PhotoAsset]) -> None:
-        """Delete local files for assets no longer present in iCloud."""
-        logger.info("Phase 3: Starting deletion detection...")
+    def _phase3_reconcile_deletions(
+        self,
+        asset_map: Dict[str, PhotoAsset],
+        synced_folder_ids: set[str],
+        synced_album_ids: set[str],
+    ) -> None:
+        """Detect deletions across assets, folders, and albums (DB tombstone only)."""
+        logger.info("Phase 3: Starting deletion reconciliation...")
 
-        deleted_ids = set(self.database.get_all_asset_ids()) - set(asset_map.keys())
         detected_on = datetime.now(timezone.utc).isoformat()
 
-        for asset_id in deleted_ids:
-            self.file_manager.delete_asset_files(asset_id)
-            self.database.mark_asset_deleted(asset_id, detected_on)
-            logger.debug(f"Mirrored deletion of asset {asset_id}")
+        deleted_assets = self._detect_asset_deletions(asset_map, detected_on)
+        deleted_folders = self._detect_folder_deletions(synced_folder_ids, detected_on)
+        deleted_albums = self._detect_album_deletions(synced_album_ids, detected_on)
 
-        self._deleted_count = len(deleted_ids)
-        logger.info(f"Phase 3 completed: {self._deleted_count} assets removed (deleted from iCloud)")
+        self._deleted_count = deleted_assets
+        logger.info(
+            f"Phase 3 completed: {deleted_assets} assets, "
+            f"{deleted_folders} folders, {deleted_albums} albums marked deleted"
+        )
+
+    def _detect_asset_deletions(
+        self, asset_map: Dict[str, PhotoAsset], detected_on: str
+    ) -> int:
+        """Tombstone assets no longer present in iCloud."""
+        deleted_ids = set(self.database.get_all_asset_ids()) - set(asset_map.keys())
+        for asset_id in deleted_ids:
+            self.database.mark_asset_deleted(asset_id, detected_on)
+            logger.debug(f"Marked asset {asset_id} as deleted")
+        return len(deleted_ids)
 
     # -- Phase 2: Album and folder sync ------------------------------------------
 
-    def _phase2_album_sync(self, photo_library: PhotoLibrary) -> dict[str, Any]:
-        """Sync folders, albums, and album membership from iCloud."""
+    def _phase2_album_sync(
+        self, photo_library: PhotoLibrary
+    ) -> tuple[set[str], set[str]]:
+        """Sync folders, albums, and album membership from iCloud (DB only).
+
+        Returns:
+            Tuple of (synced_folder_ids, synced_album_ids) for deletion detection in Phase 3.
+        """
         logger.info("Phase 2: Starting album and folder sync...")
 
         folder_tree = photo_library.folders
@@ -338,21 +362,12 @@ class SyncManager:
 
         synced_folder_ids = self._sync_folder_tree(folder_tree)
         synced_album_ids, total_memberships = self._sync_albums(albums_dict)
-        deleted_folders = self._detect_folder_deletions(synced_folder_ids)
-        deleted_albums = self._detect_album_deletions(synced_album_ids)
 
-        stats = {
-            "folders": len(synced_folder_ids),
-            "albums": len(synced_album_ids),
-            "memberships": total_memberships,
-            "deleted_folders": deleted_folders,
-            "deleted_albums": deleted_albums,
-        }
         logger.info(
             f"Phase 2 completed: {len(synced_folder_ids)} folders, "
             f"{len(synced_album_ids)} albums, {total_memberships} memberships"
         )
-        return stats
+        return synced_folder_ids, synced_album_ids
 
     def _sync_folder_tree(self, folders: list[PhotoFolder]) -> set[str]:
         """Recursively upsert folders and return all synced folder IDs."""
@@ -405,20 +420,18 @@ class SyncManager:
         self.progress_reporter.phase_complete("Phase 2: Album sync", {})
         return synced_ids, total_memberships
 
-    def _detect_folder_deletions(self, synced_ids: set[str]) -> int:
+    def _detect_folder_deletions(self, synced_ids: set[str], detected_on: str) -> int:
         """Tombstone folders no longer present in iCloud."""
         existing_ids = set(self.database.get_all_folder_ids())
         deleted_ids = existing_ids - synced_ids
-        detected_on = datetime.now(timezone.utc).isoformat()
         for folder_id in deleted_ids:
             self.database.mark_folder_deleted(folder_id, detected_on)
         return len(deleted_ids)
 
-    def _detect_album_deletions(self, synced_ids: set[str]) -> int:
+    def _detect_album_deletions(self, synced_ids: set[str], detected_on: str) -> int:
         """Tombstone albums no longer present in iCloud."""
         existing_ids = set(self.database.get_all_album_ids())
         deleted_ids = existing_ids - synced_ids
-        detected_on = datetime.now(timezone.utc).isoformat()
         for album_id in deleted_ids:
             self.database.mark_album_deleted(album_id, detected_on)
         return len(deleted_ids)
