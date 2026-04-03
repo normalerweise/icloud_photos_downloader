@@ -4,19 +4,24 @@ All components live under `src/icloudpd/new_download/`.
 
 ## SyncManager (`sync_manager.py`)
 
-The top-level orchestrator. Created with a base directory, it initializes all other components and runs the two-phase sync.
+The top-level orchestrator. Created with a base directory, authenticated session, and optional photo library, it initializes all other components and runs the five-phase sync.
 
 ### Construction
 
 ```python
-SyncManager(base_directory: Path, progress_reporter: ProgressReporter | None = None)
+SyncManager(
+    base_directory: Path,
+    session: PyiCloudSession,
+    photo_library: PhotoLibrary | None = None,
+    progress_reporter: ProgressReporter | None = None,
+)
 ```
 
 Creates and owns:
 - `PhotoDatabase(base_directory)`
 - `FileManager(base_directory)`
 - `PhotoAssetRecordMapper()`
-- `DownloadManager(file_manager)`
+- `DownloadManager(file_manager, session)`
 - `TerminalProgressReporter()` (default)
 
 ### Public API
@@ -25,13 +30,14 @@ Creates and owns:
 def sync_photos(self, photos_to_sync: PhotosToSync) -> Dict[str, Any]
 ```
 
-Runs both phases and returns statistics:
+Runs all five phases and returns statistics:
 
 ```json
 {
   "total_assets": 1500,
   "downloaded_assets": 1495,
   "failed_assets": 5,
+  "deleted_assets": 3,
   "disk_usage_bytes": 15000000000,
   "disk_usage_mb": 14305.11,
   "disk_usage_gb": 13.97
@@ -44,11 +50,20 @@ Runs both phases and returns statistics:
 |--------|-------|---------|
 | `_phase1_metadata_collection` | 1 | Iterate photos, map to records, persist metadata |
 | `_determine_download_needs` | 1 | Compare available vs downloaded versions |
-| `_phase2_download_assets` | 2 | Download all pending versions |
-| `_download_single_asset` | 2 | Download all versions of one asset |
-| `_resolve_pending_versions` | 2 | Map DB strings to VersionSize enums |
-| `_record_download_results` | 2 | Write LocalFileRecord and SyncStatus |
+| `_phase2_album_sync` | 2 | Sync folders, albums, and membership (DB only) |
+| `_sync_folder_tree` | 2 | Recursively upsert folders |
+| `_sync_albums` | 2 | Upsert albums and replace membership |
+| `_phase3_reconcile_deletions` | 3 | Tombstone deleted assets, folders, albums (DB only) |
+| `_detect_asset_deletions` | 3 | Find and tombstone removed assets |
+| `_detect_folder_deletions` | 3 | Find and tombstone removed folders |
+| `_detect_album_deletions` | 3 | Find and tombstone removed albums |
+| `_phase4_download_assets` | 4 | Download all pending versions |
+| `_download_single_asset` | 4 | Download all versions of one asset |
+| `_resolve_pending_versions` | 4 | Map DB strings to VersionSize enums |
+| `_record_download_results` | 4 | Write LocalFileRecord and SyncStatus |
+| `_phase5_filesystem_sync` | 5 | Create/update symlink structure |
 | `_resolve_version_size` | - | Static helper: version string -> VersionSize enum |
+| `_derive_album_id` | - | Static helper: album -> stable ID string |
 | `_mark_asset_failed` | - | Record failure in DB |
 | `_get_sync_stats` | - | Compile statistics from DB and filesystem |
 
@@ -56,7 +71,7 @@ Runs both phases and returns statistics:
 
 ## PhotoDatabase (`database.py`)
 
-SQLite wrapper providing typed access to the three tables.
+SQLite wrapper providing typed access to six tables.
 
 ### Construction
 
@@ -86,6 +101,8 @@ class ICloudAssetRecord:
     asset_record: Dict[str, Any] = field(default_factory=dict)
     last_metadata_update: str | None = None
     metadata_inserted_date: str | None = None
+    deleted: bool = False
+    deletion_detected_on: str | None = None
 ```
 
 #### LocalFileRecord
@@ -115,20 +132,103 @@ class SyncStatus:
     error_message: str | None = None
 ```
 
+#### FolderRecord
+
+```python
+@dataclass
+class FolderRecord:
+    folder_id: str              # iCloud recordName (UUID)
+    folder_name: str
+    parent_folder_id: str | None = None
+    position: int | None = None
+    last_sync_date: str | None = None
+    inserted_date: str | None = None
+    deleted: bool = False
+    deletion_detected_on: str | None = None
+```
+
+#### AlbumRecord
+
+```python
+@dataclass
+class AlbumRecord:
+    album_id: str               # 'user:<recordName>' or 'smart:<key>'
+    album_name: str
+    album_type: str             # 'smart' or 'user'
+    folder_id: str | None = None
+    obj_type: str | None = None
+    list_type: str | None = None
+    position: int | None = None
+    last_sync_date: str | None = None
+    inserted_date: str | None = None
+    deleted: bool = False
+    deletion_detected_on: str | None = None
+```
+
 ### Key Methods
 
 | Method | Returns | Purpose |
 |--------|---------|---------|
-| `upsert_icloud_metadata(record)` | `ICloudAssetUpsertResult` | Insert/update metadata, returns operation type |
+| `upsert_icloud_metadata(record)` | `ICloudAssetUpsertResult` | Insert/update asset metadata |
 | `upsert_local_file(record)` | None | Record downloaded file |
 | `upsert_sync_status(status)` | None | Update version sync state |
-| `get_icloud_metadata(asset_id)` | `ICloudAssetRecord \| None` | Fetch metadata |
-| `get_local_files(asset_id)` | `List[LocalFileRecord]` | All downloaded versions |
-| `get_sync_status(asset_id, version_type)` | `SyncStatus \| None` | Single version state |
-| `get_all_sync_statuses(asset_id)` | `List[SyncStatus]` | All version states |
-| `get_assets_needing_download()` | `List[str]` | Asset IDs with metadata_processed status |
-| `get_asset_count()` | `int` | Total assets in database |
+| `get_icloud_metadata(asset_id)` | `ICloudAssetRecord \| None` | Fetch asset metadata |
+| `get_local_files(asset_id)` | `list[LocalFileRecord]` | All downloaded versions |
+| `get_sync_status(asset_id, ver)` | `SyncStatus \| None` | Single version state |
+| `get_all_sync_statuses(asset_id)` | `list[SyncStatus]` | All version states |
+| `get_assets_needing_download()` | `list[str]` | Asset IDs with metadata_processed status |
+| `get_asset_count()` | `int` | Total non-deleted assets |
 | `get_downloaded_count()` | `int` | Assets with at least one local file |
+| `mark_asset_deleted(id, date)` | None | Tombstone asset + cascade album_assets |
+| `upsert_folder(record)` | `FolderUpsertResult` | Insert/update folder |
+| `get_all_folder_ids()` | `list[str]` | Non-deleted folder IDs |
+| `mark_folder_deleted(id, date)` | None | Tombstone folder + cascade children |
+| `upsert_album(record)` | `AlbumUpsertResult` | Insert/update album |
+| `get_all_album_ids()` | `list[str]` | Non-deleted album IDs |
+| `mark_album_deleted(id, date)` | None | Tombstone album + remove membership |
+| `replace_album_assets(id, ids)` | `int` | Full-replace album membership |
+| `get_album_assets(album_id)` | `list[str]` | Asset IDs in album |
+| `get_asset_albums(asset_id)` | `list[str]` | Albums containing asset |
+| `get_all_non_deleted_albums()` | `list[AlbumRecord]` | Full album objects |
+| `get_all_non_deleted_folders()` | `list[FolderRecord]` | Full folder objects |
+| `get_all_downloaded_assets()` | `list[tuple]` | Assets + local files (JOIN) |
+
+---
+
+## FilesystemSync (`filesystem_sync.py`)
+
+Phase 5: projects database state onto the filesystem as a browsable symlink structure. Purely local -- no network access.
+
+### Construction
+
+```python
+FilesystemSync(base_directory: Path, database: PhotoDatabase)
+```
+
+### Public API
+
+```python
+def sync_filesystem(self) -> dict[str, Any]
+```
+
+Returns stats: `{"created": N, "removed": N, "updated": N, "unchanged": N}`
+
+### Delta Convergence Algorithm
+
+1. **Compute desired state** from DB: `dict[Path, Path]` of symlink -> relative target
+2. **Scan existing symlinks** on disk in `Library/` and `Albums/`
+3. **Converge**: create missing, remove stale, update wrong targets
+4. **Prune** empty directories bottom-up
+
+### Symlink Naming
+
+```
+YYYYMMDD_HHMMSS_OriginalFilename.ext        (original version)
+YYYYMMDD_HHMMSS_OriginalFilename-adjusted.ext (non-original versions)
+YYYYMMDD_HHMMSS_OriginalFilename.mov          (live photo, ext from local file)
+```
+
+Collision disambiguation: sorted by asset_id, first gets clean name, subsequent get `_XXXXX` suffix (5-char base64 of asset_id).
 
 ---
 
@@ -139,7 +239,7 @@ Handles parallel downloads with retry logic. Does not manage authentication -- i
 ### Construction
 
 ```python
-DownloadManager(file_manager: FileManager)
+DownloadManager(file_manager: FileManager, session: PyiCloudSession)
 ```
 
 ### Public API
@@ -175,7 +275,7 @@ Attempt 3: wait RETRY_DELAY * 2^1 = 4s
 
 Downloads use `icloud_asset.download(url)` which calls `self._service.session.get(url, stream=True)` internally. The `PyiCloudSession` carries all necessary authentication cookies.
 
-The response is streamed to disk via `FileManager.save_file_from_stream(file_path, response.raw)`.
+The response is streamed to disk via `FileManager.save_file_from_stream(file_path, response.raw, overwrite=True)`.
 
 ---
 
@@ -200,7 +300,7 @@ def get_file_path(self, icloud_asset: PhotoAsset, version: VersionSize) -> Path
 Formula: `_data/{base64_asset_id}-{version_value}.{extension}`
 
 - Asset ID is encoded as URL-safe base64 with padding stripped
-- Version value comes from the enum (e.g., `"original"`, `"originalVideo"`)
+- Version value comes from the enum (e.g., `"original"`, `"live_photo"`)
 - Extension comes from the `AssetVersion.file_extension` field, lowercased
 
 Example: `_data/QVlrNlkrdEVTUg-original.jpg`
@@ -220,8 +320,9 @@ If the process is interrupted, only `.tmp` files remain, which are cleaned up on
 | `get_file_path(asset, version)` | Compute deterministic file path |
 | `file_exists(asset, version)` | Check if already downloaded |
 | `save_file(asset, version, content)` | Write bytes atomically |
-| `save_file_from_stream(path, stream)` | Stream write atomically (used by DownloadManager) |
+| `save_file_from_stream(path, stream, overwrite)` | Stream write atomically (used by DownloadManager) |
 | `delete_file(asset, version)` | Remove file from disk |
+| `delete_asset_files(asset_id)` | Remove all files for an asset |
 | `get_file_size(asset, version)` | File size in bytes |
 | `cleanup_incomplete_downloads()` | Remove all `.tmp` files |
 | `get_disk_usage()` | Total bytes in `_data/` |
@@ -341,6 +442,8 @@ Logs progress via `logging.info()` every 10 items. Suitable for non-interactive 
 | `RETRY_DELAY` | 2s | Base delay (exponential backoff) |
 | `DATABASE_FILENAME` | `_metadata.sqlite` | Database file name |
 | `DATA_DIRECTORY` | `_data` | Download subdirectory |
+| `LIBRARY_DIRECTORY` | `Library` | Symlink tree for date-organized browsing |
+| `ALBUMS_DIRECTORY` | `Albums` | Symlink tree for album/folder browsing |
 | `DOWNLOAD_VERSIONS` | See below | Which versions to fetch |
 
 ### DOWNLOAD_VERSIONS
@@ -348,7 +451,7 @@ Logs progress via `logging.info()` every 10 items. Suitable for non-interactive 
 ```python
 [
     AssetVersionSize.ORIGINAL,        # "original"
-    LivePhotoVersionSize.ORIGINAL,    # "originalVideo"
+    LivePhotoVersionSize.ORIGINAL,    # "live_photo"
     AssetVersionSize.ADJUSTED,        # "adjusted"
     AssetVersionSize.ALTERNATIVE,     # "alternative"
 ]
@@ -387,3 +490,25 @@ Key properties used by the new architecture:
 - `item_type: AssetItemType | None` -- IMAGE or MOVIE
 - `versions: Dict[VersionSize, AssetVersion]` -- available versions
 - `download(url: str) -> Response` -- authenticated streaming download
+
+### PhotoFolder
+
+```python
+@dataclass
+class PhotoFolder:
+    record_name: str
+    name: str
+    parent_id: str | None = None
+    children_folders: list[PhotoFolder]
+    children_albums: list[PhotoAlbum]
+```
+
+### PhotoAlbum
+
+Key properties:
+- `name: str` -- album display name
+- `record_name: str | None` -- iCloud UUID (None for smart albums)
+- `parent_folder_id: str | None` -- parent folder's recordName
+- `obj_type: str` -- iCloud object type
+- `list_type: str` -- iCloud list type
+- Iterable: yields `PhotoAsset` objects for contained photos

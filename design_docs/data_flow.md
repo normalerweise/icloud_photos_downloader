@@ -10,11 +10,11 @@ User runs:  icloudpd -u user@example.com -d /photos --recent 100
 
 The Click CLI parses arguments and:
 1. Authenticates with iCloud via `authenticator()` -> `PyiCloudService`
-2. Creates `SyncManager(Path("/photos"))`
+2. Creates `SyncManager(Path("/photos"), session, photo_library=icloud.photos)`
 3. Selects strategy: `RecentPhotosStrategy(icloud.photos, 100)`
 4. Calls `sync_manager.sync_photos(strategy)`
 
-### 2. Phase 1: Metadata Collection
+### 2. Phase 1: Asset Metadata Collection
 
 ```
 for each PhotoAsset in PhotosToSync:
@@ -38,10 +38,57 @@ SyncManager._determine_download_needs(asset, record)
 PhotoDatabase.upsert_sync_status(status)
     |  Record status for each version
     v
-asset_map[asset.id] = asset   (kept in memory for Phase 2)
+asset_map[asset.id] = asset   (kept in memory for Phase 4)
 ```
 
-### 3. Phase 2: Download
+### 3. Phase 2: Album & Folder Sync
+
+Only runs when `photo_library` is available.
+
+```
+PhotoLibrary.folders
+    |  Recursively fetches folder tree via CPLAlbumByPositionLive
+    |  (top-level unfiltered, children via parentId filter)
+    v
+SyncManager._sync_folder_tree(folders)
+    |  For each folder (recursive):
+    |    - Upsert FolderRecord to database
+    |    - Collect synced folder IDs
+    v
+PhotoLibrary.albums
+    |  All albums (including nested inside folders)
+    v
+SyncManager._sync_albums(albums_dict)
+    |  For each album:
+    |    - Derive album_id: "user:<recordName>" or "smart:<key>"
+    |    - Upsert AlbumRecord to database
+    |    - For user albums: full-replace album_assets membership
+    |    - Collect synced album IDs
+    v
+Return (synced_folder_ids, synced_album_ids) for Phase 3
+```
+
+### 4. Phase 3: Reconcile Deletions
+
+Only runs when `covers_full_library` is true (partial syncs can't detect deletions).
+
+```
+All operations are DB-only (tombstone pattern, no file I/O):
+
+_detect_asset_deletions(asset_map, detected_on)
+    |  DB asset IDs - seen asset IDs = deleted
+    |  For each: mark_asset_deleted (sets deleted=TRUE, cascades album_assets)
+    v
+_detect_folder_deletions(synced_folder_ids, detected_on)
+    |  DB folder IDs - synced folder IDs = deleted
+    |  For each: mark_folder_deleted (cascades children)
+    v
+_detect_album_deletions(synced_album_ids, detected_on)
+    |  DB album IDs - synced album IDs = deleted
+    |  For each: mark_album_deleted (removes album_assets rows)
+```
+
+### 5. Phase 4: Download
 
 ```
 PhotoDatabase.get_assets_needing_download()
@@ -83,7 +130,32 @@ SyncManager._record_download_results(asset_id, ...)
 ProgressReporter.phase_progress(current, total)
 ```
 
-### 4. Completion
+### 6. Phase 5: Filesystem Sync
+
+```
+FilesystemSync(base_directory, database)
+    |
+    v
+Compute desired state from DB:
+    |  _compute_library_links: group assets by YYYY/MM from created_date
+    |    - Symlink names: YYYYMMDD_HHMMSS_filename.ext
+    |    - Disambiguate collisions (append _XXXXX suffix)
+    |  _compute_album_links: for each user album
+    |    - Resolve folder path (walk parent chain)
+    |    - Symlink names: same datetime prefix scheme
+    v
+Scan existing symlinks on disk:
+    |  Walk Library/ and Albums/, collect all symlinks and targets
+    v
+Converge (delta sync):
+    |  desired - existing = create
+    |  existing - desired = remove
+    |  desired ∩ existing where target differs = update
+    v
+Prune empty directories (bottom-up rmdir)
+```
+
+### 7. Completion
 
 ```
 SyncManager._get_sync_stats()
@@ -144,6 +216,23 @@ Step 3: extension.lower() -> "jpg"
 Output: _data/QVlrNlkrdEVTUg-original.jpg
 ```
 
+### Symlink Name Derivation (Phase 5)
+
+```
+Input:  asset.created_date = "2024-01-15T14:30:22"
+        asset.filename = "IMG_7409.JPG"
+        local_file.version_type = "original"
+
+Step 1: Parse datetime -> prefix "20240115_143022"
+Step 2: original stem -> "IMG_7409", extension -> ".JPG"
+Step 3: version = "original" -> no suffix
+
+Output: Library/2024/01/20240115_143022_IMG_7409.JPG -> ../../_data/QVlrNlkr...-original.jpg
+```
+
+For non-original versions: `20240115_143022_IMG_7409-adjusted.JPG`.
+For live photos: extension comes from local file (`.mov`).
+
 ## Error Handling
 
 ### Phase 1 Errors
@@ -153,7 +242,7 @@ If metadata processing fails for an asset:
 - SyncStatus set to `"failed"` with error message
 - Processing continues with next asset
 
-### Phase 2 Errors
+### Phase 4 Errors
 
 Three levels of error handling:
 
@@ -175,12 +264,12 @@ Recovery: Re-run. Upserts are idempotent. Already-processed assets get UPDATED.
           Already-completed versions stay "completed". New versions get "metadata_processed".
 ```
 
-### Scenario: Interrupted during Phase 2
+### Scenario: Interrupted during Phase 4
 
 ```
 State: Some files downloaded, some sync_status = "completed", some = "metadata_processed"
 Recovery: Re-run. Phase 1 re-processes metadata (fast, idempotent).
-          Phase 2 queries only "metadata_processed" versions -- skips completed ones.
+          Phase 4 queries only "metadata_processed" versions -- skips completed ones.
           Partial .tmp files cleaned up automatically.
 ```
 
@@ -190,5 +279,14 @@ Recovery: Re-run. Phase 1 re-processes metadata (fast, idempotent).
 State: Failed versions have sync_status = "failed" with error_message
 Recovery: Currently, re-running resets Phase 1 which re-evaluates needs.
           Failed versions without local files will be set to "metadata_processed" again.
-          Phase 2 will retry them.
+          Phase 4 will retry them.
+```
+
+### Scenario: Interrupted during Phase 5
+
+```
+State: Library/ and Albums/ may have partial symlinks
+Recovery: Phase 5 uses delta convergence -- next run will create missing symlinks
+          and remove stale ones. No data loss possible since symlinks only point
+          into _data/ (never moved or copied).
 ```
