@@ -83,6 +83,12 @@ def _add_global_options(parser: argparse.ArgumentParser) -> argparse.ArgumentPar
         default="console",
         type=lower,
     )
+    cloned.add_argument(
+        "--watch-with-interval",
+        help="Run in watch mode, syncing every N seconds (default: run once)",
+        type=int,
+        default=None,
+    )
     return cloned
 
 
@@ -185,6 +191,7 @@ def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfi
             )
         ),
         mfa_provider=MFAProvider(global_ns.mfa_provider),
+        watch_with_interval=global_ns.watch_with_interval,
     )
 
     return global_config, user_configs

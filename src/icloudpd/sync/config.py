@@ -28,3 +28,4 @@ class SyncGlobalConfig:
     domain: str
     password_providers: Sequence[PasswordProvider]
     mfa_provider: MFAProvider
+    watch_with_interval: int | None = None
