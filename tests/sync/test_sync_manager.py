@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
-from icloudpd.new_download.database import (
+from icloudpd.sync.database import (
     AlbumRecord,
     FolderRecord,
     ICloudAssetRecord,
@@ -16,13 +16,13 @@ from icloudpd.new_download.database import (
     SyncStatus,
     UpsertResult,
 )
-from icloudpd.new_download.download_manager import DownloadManager
-from icloudpd.new_download.file_manager import AssetFileRef, FileManager
-from icloudpd.new_download.filesystem_sync import FilesystemSync
-from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
-from icloudpd.new_download.progress_reporter import LoggingProgressReporter
-from icloudpd.new_download.sync_manager import SyncManager, resolve_version_size
-from icloudpd.new_download.sync_strategy import (
+from icloudpd.sync.download_manager import DownloadManager
+from icloudpd.sync.file_manager import AssetFileRef, FileManager
+from icloudpd.sync.filesystem_sync import FilesystemSync
+from icloudpd.sync.photo_asset_record_mapper import PhotoAssetRecordMapper
+from icloudpd.sync.progress_reporter import LoggingProgressReporter
+from icloudpd.sync.sync_manager import SyncManager, resolve_version_size
+from icloudpd.sync.sync_strategy import (
     NoOpStrategy,
     RecentPhotosStrategy,
     SinceDateStrategy,

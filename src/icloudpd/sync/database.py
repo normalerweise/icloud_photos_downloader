@@ -308,7 +308,9 @@ class PhotoDatabase:
                 asset_versions = excluded.asset_versions,
                 master_record = excluded.master_record,
                 asset_record = excluded.asset_record,
-                last_metadata_update = excluded.last_metadata_update
+                last_metadata_update = excluded.last_metadata_update,
+                deleted = FALSE,
+                deletion_detected_on = NULL
             """,
             (
                 metadata.asset_id, metadata.filename, metadata.asset_type,

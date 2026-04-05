@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from icloudpd.new_download.database import ICloudAssetRecord
+from icloudpd.sync.database import ICloudAssetRecord
 from pyicloud_ipd.services.photos import PhotoAsset
 from pyicloud_ipd.session import PyiCloudSession
 from pyicloud_ipd.version_size import VersionSize

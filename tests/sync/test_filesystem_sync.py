@@ -5,14 +5,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from icloudpd.new_download.database import (
+from icloudpd.sync.database import (
     AlbumRecord,
     FolderRecord,
     ICloudAssetRecord,
     LocalFileRecord,
     PhotoDatabase,
 )
-from icloudpd.new_download.filesystem_sync import FilesystemSync, _sanitize_filename, _short_id
+from icloudpd.sync.filesystem_sync import FilesystemSync, _sanitize_filename, _short_id
 
 
 class TestFilesystemSync:
