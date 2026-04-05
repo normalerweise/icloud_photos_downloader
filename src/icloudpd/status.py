@@ -18,6 +18,14 @@ class Status(Enum):
         return self.name
 
 
+class TrustedDeviceInfo:
+    """Serializable trusted device info for web UI display."""
+
+    def __init__(self, device_id: int, obfuscated_number: str) -> None:
+        self.device_id = device_id
+        self.obfuscated_number = obfuscated_number
+
+
 class StatusExchange:
     def __init__(self) -> None:
         self.lock = Lock()
@@ -28,6 +36,9 @@ class StatusExchange:
         self._user_configs: Sequence[Any] = []
         self._current_user: str | None = None
         self._progress = Progress()
+        self._trusted_devices: Sequence[TrustedDeviceInfo] = []
+        self._sms_request_device_id: int | None = None
+        self._sms_sent_device_id: int | None = None
 
     def get_status(self) -> Status:
         with self.lock:
@@ -120,3 +131,41 @@ class StatusExchange:
     def clear_current_user(self) -> None:
         with self.lock:
             self._current_user = None
+
+    def set_trusted_devices(self, devices: Sequence[TrustedDeviceInfo]) -> None:
+        with self.lock:
+            self._trusted_devices = devices
+
+    def get_trusted_devices(self) -> Sequence[TrustedDeviceInfo]:
+        with self.lock:
+            return self._trusted_devices
+
+    def request_sms(self, device_id: int) -> bool:
+        """Web UI calls this to request SMS be sent to a device."""
+        with self.lock:
+            if self._status != Status.NEED_MFA:
+                return False
+            self._sms_request_device_id = device_id
+            return True
+
+    def consume_sms_request(self) -> int | None:
+        """Auth loop calls this to pick up and clear a pending SMS request."""
+        with self.lock:
+            device_id = self._sms_request_device_id
+            self._sms_request_device_id = None
+            return device_id
+
+    def set_sms_sent(self, device_id: int) -> None:
+        with self.lock:
+            self._sms_sent_device_id = device_id
+
+    def get_sms_sent_device_id(self) -> int | None:
+        with self.lock:
+            return self._sms_sent_device_id
+
+    def clear_mfa_state(self) -> None:
+        """Reset MFA-related state between auth attempts."""
+        with self.lock:
+            self._trusted_devices = []
+            self._sms_request_device_id = None
+            self._sms_sent_device_id = None

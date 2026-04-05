@@ -5,7 +5,7 @@ from unittest.mock import Mock
 from icloudpd.mfa_provider import MFAProvider
 from icloudpd.password_provider import PasswordProvider
 from icloudpd.progress import Progress
-from icloudpd.status import StatusExchange
+from icloudpd.status import Status, StatusExchange, TrustedDeviceInfo
 from icloudpd.sync.config import SyncGlobalConfig, SyncUserConfig
 from icloudpd.sync.progress_reporter import WebUIProgressReporter
 from icloudpd.sync.runner import (
@@ -146,3 +146,47 @@ class TestSyncGlobalConfigWatchMode:
             watch_with_interval=3600,
         )
         assert config.watch_with_interval == 3600
+
+
+class TestStatusExchangeSMS:
+    def test_set_and_get_trusted_devices(self) -> None:
+        se = StatusExchange()
+        devices = [
+            TrustedDeviceInfo(device_id=1, obfuscated_number="(***) ***-**78"),
+            TrustedDeviceInfo(device_id=2, obfuscated_number="(***) ***-**99"),
+        ]
+        se.set_trusted_devices(devices)
+        result = se.get_trusted_devices()
+        assert len(result) == 2
+        assert result[0].device_id == 1
+        assert result[1].obfuscated_number == "(***) ***-**99"
+
+    def test_request_sms_requires_need_mfa_status(self) -> None:
+        se = StatusExchange()
+        assert se.request_sms(1) is False  # NO_INPUT_NEEDED
+        se.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
+        assert se.request_sms(1) is True
+
+    def test_consume_sms_request_returns_and_clears(self) -> None:
+        se = StatusExchange()
+        se.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
+        se.request_sms(42)
+        assert se.consume_sms_request() == 42
+        assert se.consume_sms_request() is None
+
+    def test_sms_sent_tracking(self) -> None:
+        se = StatusExchange()
+        assert se.get_sms_sent_device_id() is None
+        se.set_sms_sent(5)
+        assert se.get_sms_sent_device_id() == 5
+
+    def test_clear_mfa_state(self) -> None:
+        se = StatusExchange()
+        se.set_trusted_devices([TrustedDeviceInfo(1, "***")])
+        se.replace_status(Status.NO_INPUT_NEEDED, Status.NEED_MFA)
+        se.request_sms(1)
+        se.set_sms_sent(1)
+        se.clear_mfa_state()
+        assert se.get_trusted_devices() == []
+        assert se.consume_sms_request() is None
+        assert se.get_sms_sent_device_id() is None

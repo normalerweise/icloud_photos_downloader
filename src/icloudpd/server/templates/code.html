@@ -8,9 +8,31 @@
             </li>
         </ul>
         {% endif %}
+        {% if trusted_devices %}
         <div class="col-12 mb-3">
-          <label for="code" class="form-label">Two-Factor code for {{ current_user if current_user else 'iCloud account' }}</label>
-          <input type="text" class="form-control" id="code" name="code" placeholder="Enter Two-Factor Code">
+            <p class="text-muted">Didn't receive a push notification? Request an SMS code:</p>
+            {% for device in trusted_devices %}
+            <button type="button" class="btn btn-outline-secondary btn-sm me-2 mb-1"
+                    hx-post="/send-sms"
+                    hx-vals='{"device_id": "{{ device.device_id }}"}'
+                    hx-swap="outerHTML"
+                    hx-target="closest fieldset"
+                    {% if sms_sent_device_id == device.device_id %}disabled{% endif %}>
+                SMS to {{ device.obfuscated_number }}
+                {% if sms_sent_device_id == device.device_id %} (sent){% endif %}
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div class="col-12 mb-3">
+          <label for="code" class="form-label">
+            {% if sms_sent_device_id %}
+            Enter the SMS code you received
+            {% else %}
+            Two-Factor code for {{ current_user if current_user else 'iCloud account' }}
+            {% endif %}
+          </label>
+          <input type="text" class="form-control" id="code" name="code" placeholder="Enter Two-Factor Code" autofocus>
         </div>
         <div class="col-12">
             <button type="submit" class="btn btn-primary">Submit</button>

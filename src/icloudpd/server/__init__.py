@@ -41,7 +41,15 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
                 current_user=_current_user,
             )
         if _status == Status.NEED_MFA:
-            return render_template("code.html", error=_error, current_user=_current_user)
+            _trusted_devices = _status_exchange.get_trusted_devices()
+            _sms_sent_device_id = _status_exchange.get_sms_sent_device_id()
+            return render_template(
+                "code.html",
+                error=_error,
+                current_user=_current_user,
+                trusted_devices=_trusted_devices,
+                sms_sent_device_id=_sms_sent_device_id,
+            )
         if _status == Status.NEED_PASSWORD:
             return render_template("password.html", error=_error, current_user=_current_user)
         return render_template("status.html", status=_status)
@@ -77,6 +85,28 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
             render_template("auth_error.html", type="password", current_user=_current_user),
             400,
         )  # incorrect code
+
+    @app.route("/send-sms", methods=["POST"])
+    def send_sms() -> Response | str:
+        _current_user = _status_exchange.get_current_user()
+        device_id_str = request.form.get("device_id")
+        if device_id_str is not None:
+            try:
+                device_id = int(device_id_str)
+            except ValueError:
+                return make_response("Invalid device ID", 400)
+            if _status_exchange.request_sms(device_id):
+                return render_template(
+                    "sms_requested.html", current_user=_current_user
+                )
+        return make_response(
+            render_template(
+                "auth_error.html",
+                type="SMS request",
+                current_user=_current_user,
+            ),
+            400,
+        )
 
     @app.route("/resume", methods=["POST"])
     def resume() -> Response | str:

@@ -1,0 +1,8 @@
+<div id="zone">
+    <div class="col-12">
+        <label for="smt" class="form-label">SMS code requested{% if current_user %} for {{ current_user }}{% endif %}. Check your phone.</label>
+    </div>
+    <div class="col-12">
+        <button id="smt" hx-get="/status" hx-trigger="load delay:3s" hx-target="#zone" class="btn btn-primary">Refresh</button>
+    </div>
+</div>

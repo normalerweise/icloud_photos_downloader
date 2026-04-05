@@ -7,7 +7,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Mapping, Tuple
 
 from icloudpd.mfa_provider import MFAProvider
-from icloudpd.status import Status, StatusExchange
+from icloudpd.status import Status, StatusExchange, TrustedDeviceInfo
 from pyicloud_ipd.base import PyiCloudService
 from pyicloud_ipd.exceptions import PyiCloudFailedMFAException
 
@@ -246,14 +246,33 @@ def request_2fa_web(
             f"Expected NO_INPUT_NEEDED, but got {status_exchange.get_status()}"
         )
 
+    # Fetch trusted phone numbers and expose them to the web UI
+    devices = icloud.get_trusted_phone_numbers()
+    status_exchange.set_trusted_devices([
+        TrustedDeviceInfo(device_id=d.id, obfuscated_number=d.obfuscated_number)
+        for d in devices
+    ])
+
+    sms_device_id: int | None = None
+
     # wait for input
     while True:
+        # Check for pending SMS send request from web UI
+        pending_sms = status_exchange.consume_sms_request()
+        if pending_sms is not None:
+            logger.info(f"Sending SMS code to device {pending_sms}...")
+            if icloud.send_2fa_code_sms(pending_sms):
+                sms_device_id = pending_sms
+                status_exchange.set_sms_sent(pending_sms)
+                logger.info("SMS code sent successfully")
+            else:
+                logger.warning("Failed to send SMS code")
+                status_exchange.set_error("Failed to send SMS code to device")
+
         status = status_exchange.get_status()
         if status == Status.NEED_MFA:
             time.sleep(1)
             continue
-        else:
-            pass
 
         if status_exchange.replace_status(Status.SUPPLIED_MFA, Status.CHECKING_MFA):
             code = status_exchange.get_payload()
@@ -262,15 +281,20 @@ def request_2fa_web(
                     "Internal error: did not get code for SUPPLIED_MFA status"
                 )
 
-            if not icloud.validate_2fa_code(code):
+            # Use SMS validation if an SMS was sent, otherwise push validation
+            if sms_device_id is not None:
+                valid = icloud.validate_2fa_code_sms(sms_device_id, code)
+            else:
+                valid = icloud.validate_2fa_code(code)
+
+            if not valid:
                 if status_exchange.set_error("Failed to verify two-factor authentication code"):
-                    # that will loop forever
-                    # TODO give user an option to restart auth in case they missed code
                     continue
                 else:
-                    raise PyiCloudFailedMFAException("Failed to chage status of invalid code")
+                    raise PyiCloudFailedMFAException("Failed to change status of invalid code")
             else:
-                status_exchange.replace_status(Status.CHECKING_MFA, Status.NO_INPUT_NEEDED)  # done
+                status_exchange.replace_status(Status.CHECKING_MFA, Status.NO_INPUT_NEEDED)
+                status_exchange.clear_mfa_state()
 
                 logger.info(
                     "Great, you're all set up. The script can now be run without "
@@ -279,5 +303,6 @@ def request_2fa_web(
                     "the two-factor authentication expires.\n"
                     "(Use --help to view information about SMTP options.)"
                 )
+                return
         else:
             raise PyiCloudFailedMFAException("Failed to change status")
