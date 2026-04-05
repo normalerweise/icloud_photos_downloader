@@ -20,19 +20,24 @@ The legacy icloudpd download flow was monolithic -- authentication, iteration, d
 ## High-Level Architecture
 
 ```
-CLI (base.py)
-  |
+CLI (sync/cli.py)
+  |  parse args -> SyncGlobalConfig + SyncUserConfig[]
+  v
+Runner (sync/runner.py)
+  |  authenticates, constructs components, selects strategy
   v
 Authentication (pyicloud_ipd)
   |
   v
 SyncManager  ----orchestrates--->  PhotosToSync (strategy)
-  |                                     |
+  |  (all deps injected)                |
   |  Phase 1                            v
   |  asset metadata  <---maps---  PhotoAssetRecordMapper
   |  collection                         |
-  |     |                               v
-  |     v                          PhotoAsset (iCloud API)
+  |  (bulk pre-fetch,                   v
+  |   batch insert)              PhotoAsset (iCloud API)
+  |     |
+  |     v
   |  PhotoDatabase
   |     |
   |  Phase 2                       PhotoLibrary
@@ -83,6 +88,8 @@ The sync process is split into five sequential phases. Phases 1-3 are database-o
 
 Iterates through iCloud photos (filtered by the selected strategy), maps each `PhotoAsset` to an `ICloudAssetRecord`, and persists it to SQLite. For each asset, determines which versions need downloading by comparing available versions against what's already on disk and in the database.
 
+Uses bulk pre-fetching (`get_sync_statuses_for_assets`, `get_local_files_for_assets`) before the main loop to avoid per-asset DB queries. All resulting `SyncStatus` records are collected and batch-inserted at the end via `batch_upsert_sync_statuses`.
+
 This phase is lightweight -- no file I/O beyond the database. It builds a complete picture of what needs to happen before any downloads begin.
 
 ### Phase 2: Album & Folder Sync
@@ -130,16 +137,19 @@ Uses delta convergence: compares desired symlinks (computed from DB) against exi
 
 ## Component Responsibilities
 
-| Component | Responsibility |
-|-----------|---------------|
-| `SyncManager` | Orchestrates the five-phase sync, wires components together |
-| `PhotoDatabase` | SQLite persistence for metadata, local files, sync status, albums, folders |
-| `DownloadManager` | Parallel downloads with retry and exponential backoff |
-| `FileManager` | Atomic file writes to `_data/`, path generation, cleanup |
-| `FilesystemSync` | Phase 5: create/update/remove symlinks in `Library/` and `Albums/` |
-| `PhotoAssetRecordMapper` | Maps iCloud `PhotoAsset` objects to database records |
-| `PhotosToSync` (strategies) | Filters which photos to sync (recent, since date, all) |
-| `ProgressReporter` | Displays progress bars and statistics |
+| Component | Module | Responsibility |
+|-----------|--------|---------------|
+| `cli.py` | `sync/cli.py` | argparse CLI, parses into `SyncGlobalConfig` + `SyncUserConfig[]` |
+| `runner.py` | `sync/runner.py` | Authenticates, constructs all components, selects strategy, runs sync |
+| `SyncManager` | `sync/sync_manager.py` | Orchestrates the five-phase sync (all dependencies injected) |
+| `PhotoDatabase` | `sync/database.py` | SQLite persistence for metadata, local files, sync status, albums, folders |
+| `DownloadManager` | `sync/download_manager.py` | Parallel downloads with retry and exponential backoff |
+| `FileManager` | `sync/file_manager.py` | Atomic file writes to `_data/`, path generation, cleanup |
+| `FilesystemSync` | `sync/filesystem_sync.py` | Phase 5: create/update/remove symlinks in `Library/` and `Albums/` |
+| `PhotoAssetRecordMapper` | `sync/photo_asset_record_mapper.py` | Maps iCloud `PhotoAsset` to DB records and `AssetFileRef` |
+| `PhotosToSync` (strategies) | `sync/sync_strategy.py` | Filters which photos to sync (recent, since date, all) |
+| `ProgressReporter` | `sync/progress_reporter.py` | Displays progress bars and statistics |
+| `SyncUserConfig` / `SyncGlobalConfig` | `sync/config.py` | Typed configuration dataclasses |
 
 ## Directory Layout
 
@@ -184,7 +194,7 @@ Medium and thumbnail versions are deliberately skipped.
 
 ## Authentication Flow
 
-The new architecture does not manage authentication itself. It relies on the existing `authenticator()` in `base.py` which produces an authenticated `PyiCloudService` instance. The `PhotoAsset.download(url)` method uses the authenticated session internally, so `DownloadManager` never needs to handle cookies or tokens directly.
+The sync package does not manage authentication itself. `runner.py` calls the shared `authenticator()` (from `icloudpd.authentication`) which produces an authenticated `PyiCloudService` instance. The `PhotoAsset.download(url)` method uses the authenticated session internally, so `DownloadManager` never needs to handle cookies or tokens directly.
 
 ## Key Design Decisions
 
@@ -203,3 +213,16 @@ The new architecture does not manage authentication itself. It relies on the exi
 7. **DB-only phases 1-3** -- Metadata, album sync, and deletion detection are pure database operations. No files are created or deleted until Phase 4 (download) and Phase 5 (symlinks). This makes the first three phases fast, safe, and idempotent.
 
 8. **Tombstone deletions** -- Deleted assets/folders/albums are soft-deleted (marked with `deleted = TRUE`) rather than removed from the database. This preserves history and enables future features like undo or deletion reports.
+
+9. **Dependency injection** -- `SyncManager` receives all collaborators as constructor arguments (see design principle 5.2: Uncoupled Logic). `runner.py` is the composition root that wires everything together. This enables testing with fakes/stubs without touching the import graph.
+
+10. **Clock protocol** -- Time generation is abstracted via the `Clock` protocol (default: `SystemClock`), making tests deterministic.
+
+## Related Docs
+
+| Document | Focus |
+|----------|-------|
+| [components.md](components.md) | Constructor signatures, data types, method tables per component |
+| [data_flow.md](data_flow.md) | End-to-end data transformations and lifecycle per phase |
+| [database.md](database.md) | SQL schema, state machine, upsert strategies, query patterns |
+| [filesystem_sync.md](filesystem_sync.md) | Phase 5 symlink naming, delta convergence, album tree computation |

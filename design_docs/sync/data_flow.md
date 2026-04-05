@@ -2,43 +2,55 @@
 
 ## End-to-End Flow
 
-### 1. CLI Entry (`base.py`)
+### 1. CLI Entry (`sync/cli.py` + `sync/runner.py`)
 
 ```
-User runs:  icloudpd -u user@example.com -d /photos --recent 100
+User runs:  icloudpd-sync -u user@example.com -d /photos --recent 100
 ```
 
-The Click CLI parses arguments and:
+`cli.py` parses arguments into `SyncGlobalConfig` + `SyncUserConfig[]`, then calls `runner.run_sync()`:
+
 1. Authenticates with iCloud via `authenticator()` -> `PyiCloudService`
-2. Creates `SyncManager(Path("/photos"), session, photo_library=icloud.photos)`
-3. Selects strategy: `RecentPhotosStrategy(icloud.photos, 100)`
-4. Calls `sync_manager.sync_photos(strategy)`
+2. Constructs all components (database, file_manager, mapper, download_manager, filesystem_sync, progress_reporter)
+3. Creates `SyncManager(...)` with all dependencies injected
+4. Selects strategy: `RecentPhotosStrategy(icloud.photos, 100)`
+5. Calls `sync_manager.sync_photos(strategy)`
 
 ### 2. Phase 1: Asset Metadata Collection
 
 ```
-for each PhotoAsset in PhotosToSync:
+Collect all PhotoAssets into assets_list and asset_map
     |
     v
-PhotoAssetRecordMapper.map_icloud_metadata(asset)
+Bulk pre-fetch existing state:
+    |  database.get_sync_statuses_for_assets(all_asset_ids)
+    |  database.get_local_files_for_assets(all_asset_ids)
+    v
+for each PhotoAsset in assets_list:
+    |
+    v
+PhotoAssetRecordMapper.map_icloud_metadata(asset, clock.now())
     |  Extracts: id, filename, type, dates, dimensions, versions, subtypes
     |  Stores raw master_record and asset_record for future use
     v
 PhotoDatabase.upsert_icloud_metadata(record)
     |  INSERT or UPDATE in icloud_assets table
-    |  Returns ICloudAssetUpsertResult (INSERTED or UPDATED)
+    |  Returns UpsertResult (INSERTED or UPDATED)
     v
-SyncManager._determine_download_needs(asset, record)
+SyncManager._determine_download_needs(asset, record, existing_statuses, local_files)
     |  For each version in DOWNLOAD_VERSIONS:
     |    - If version not available in iCloud -> skip
-    |    - If version already completed in sync_status -> skip
-    |    - If version has local file -> mark "completed"
-    |    - Otherwise -> mark "metadata_processed"
-    v
-PhotoDatabase.upsert_sync_status(status)
-    |  Record status for each version
+    |    - If version already completed (SyncState.COMPLETED) -> skip
+    |    - If version has local file -> mark COMPLETED
+    |    - Otherwise -> mark METADATA_PROCESSED
+    |  Appends SyncStatus to batch list (no DB write yet)
     v
 asset_map[asset.id] = asset   (kept in memory for Phase 4)
+
+After loop:
+    v
+PhotoDatabase.batch_upsert_sync_statuses(all_sync_statuses)
+    |  Single batch insert/update for all collected statuses
 ```
 
 ### 3. Phase 2: Album & Folder Sync
@@ -120,12 +132,13 @@ DownloadManager.download_asset_versions(metadata, icloud_asset, versions)
     |  Collect results: (downloaded_values, failed_values)
     v
 SyncManager._record_download_results(asset_id, ...)
+    |  Uses mapper.to_file_ref(icloud_asset) for file path resolution
     |  For each downloaded version:
-    |    - Create LocalFileRecord (filename, path, size, date)
+    |    - build_local_file_record() (pure function)
     |    - Upsert to local_files table
-    |    - Set sync_status = "completed"
+    |    - Set sync_status = SyncState.COMPLETED
     |  For each failed version:
-    |    - Set sync_status = "failed" with error message
+    |    - Set sync_status = SyncState.FAILED with error message
     v
 ProgressReporter.phase_progress(current, total)
 ```
@@ -201,7 +214,7 @@ Database string     VersionSize enum              Used for
 "originalVideo"<->  LivePhotoVersionSize.ORIGINAL  live photo videos
 ```
 
-Resolution is done by iterating `icloud_asset.versions` and matching `.value`.
+Resolution is done by the module-level `resolve_version_size()` function, which iterates `icloud_asset.versions` and matches `.value`.
 
 ### File Path Derivation
 

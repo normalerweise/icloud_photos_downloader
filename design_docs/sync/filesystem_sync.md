@@ -141,9 +141,9 @@ Smart albums (Favorites, Videos, Panoramas, etc.) are **skipped** in Phase 5. Th
 
 ## Implementation
 
-### FilesystemSync (`filesystem_sync.py`)
+### FilesystemSync (`sync/filesystem_sync.py`)
 
-Single class, no network dependencies. Created fresh by `SyncManager._phase5_filesystem_sync()`.
+Single class, no network dependencies. Injected into `SyncManager` and invoked during `_phase5_filesystem_sync()`.
 
 ### Database Dependencies
 

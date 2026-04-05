@@ -147,6 +147,17 @@ CREATE INDEX idx_album_assets_album_id ON album_assets(album_id);
 
 ## State Machine
 
+States are defined by the `SyncState` enum:
+
+```python
+class SyncState(Enum):
+    PENDING = "pending"
+    METADATA_PROCESSED = "metadata_processed"
+    DOWNLOADING = "downloading"
+    COMPLETED = "completed"
+    FAILED = "failed"
+```
+
 Each asset-version progresses through these states:
 
 ```
@@ -158,12 +169,12 @@ metadata_processed  -->  downloading  -->  completed
 
 | State | Meaning | Set By |
 |-------|---------|--------|
-| `metadata_processed` | Metadata collected, ready for download | Phase 1 |
-| `downloading` | Download in progress | Phase 4 (before download) |
-| `completed` | File downloaded and recorded | Phase 4 (after success) |
-| `failed` | Download or metadata processing failed | Either phase |
+| `METADATA_PROCESSED` | Metadata collected, ready for download | Phase 1 |
+| `DOWNLOADING` | Download in progress | Phase 4 (before download) |
+| `COMPLETED` | File downloaded and recorded | Phase 4 (after success) |
+| `FAILED` | Download or metadata processing failed | Either phase |
 
-The `pending` state exists in the dataclass default but is not used in the current flow. Phase 1 sets versions directly to `metadata_processed` (ready for download) or `completed` (already on disk).
+The `PENDING` state exists in the enum but is not used in the current flow. Phase 1 sets versions directly to `METADATA_PROCESSED` (ready for download) or `COMPLETED` (already on disk).
 
 ## Deletion Tracking
 
