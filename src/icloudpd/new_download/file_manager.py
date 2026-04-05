@@ -3,15 +3,23 @@
 import base64
 import logging
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-from pyicloud_ipd.services.photos import PhotoAsset
 from pyicloud_ipd.version_size import VersionSize
 
 from .constants import DATA_DIRECTORY, DOWNLOAD_VERSIONS
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AssetFileRef:
+    """Lightweight reference for filesystem operations — decouples FileManager from iCloud domain."""
+
+    asset_id: str
+    filename: str
 
 
 class FileManager:
@@ -31,20 +39,20 @@ class FileManager:
         """Ensure required directories exist."""
         self.data_directory.mkdir(parents=True, exist_ok=True)
 
-    def get_file_path(self, icloud_asset: PhotoAsset, version: VersionSize) -> Path:
+    def get_file_path(self, asset_ref: AssetFileRef, version: VersionSize) -> Path:
         """Generate file path for an asset version.
 
         Args:
-            icloud_asset: iCloud asset
+            asset_ref: Lightweight asset reference (id + filename)
             version: Version type (original, adjusted, alternative)
 
         Returns:
             Path where the file should be saved
         """
         # Encode asset_id as URL-safe base64, strip padding
-        safe_asset_id = base64.urlsafe_b64encode(icloud_asset.id.encode()).decode().rstrip("=")
+        safe_asset_id = base64.urlsafe_b64encode(asset_ref.asset_id.encode()).decode().rstrip("=")
         # Derive file extension from asset filename
-        extension = icloud_asset.filename.rsplit(".", 1)[-1].lower() if "." in icloud_asset.filename else "jpg"
+        extension = asset_ref.filename.rsplit(".", 1)[-1].lower() if "." in asset_ref.filename else "jpg"
         size_indicator = version.value
 
         # Generate filename: base64(asset_id)-version.extension
@@ -52,7 +60,7 @@ class FileManager:
 
         return self.data_directory / filename
 
-    def file_exists(self, icloud_asset: PhotoAsset, version: VersionSize) -> bool:
+    def file_exists(self, asset_ref: AssetFileRef, version: VersionSize) -> bool:
         """Check if a file already exists.
 
         Args:
@@ -63,12 +71,12 @@ class FileManager:
         Returns:
             True if file exists, False otherwise
         """
-        file_path = self.get_file_path(icloud_asset, version)
+        file_path = self.get_file_path(asset_ref, version)
         return file_path.exists()
 
     def save_file(
         self,
-        icloud_asset: PhotoAsset,
+        asset_ref: AssetFileRef,
         version: VersionSize,
         content: bytes,
         overwrite: bool = False,
@@ -85,7 +93,7 @@ class FileManager:
         Returns:
             True if successful, False otherwise
         """
-        file_path = self.get_file_path(icloud_asset, version)
+        file_path = self.get_file_path(asset_ref, version)
 
         # Check if file exists and we're not overwriting
         if file_path.exists() and not overwrite:
@@ -151,7 +159,7 @@ class FileManager:
                 temp_path.unlink()
             return False
 
-    def delete_file(self, icloud_asset: PhotoAsset, version: VersionSize) -> bool:
+    def delete_file(self, asset_ref: AssetFileRef, version: VersionSize) -> bool:
         """Delete a file.
 
         Args:
@@ -162,7 +170,7 @@ class FileManager:
         Returns:
             True if successful, False otherwise
         """
-        file_path = self.get_file_path(icloud_asset, version)
+        file_path = self.get_file_path(asset_ref, version)
 
         try:
             if file_path.exists():
@@ -194,7 +202,7 @@ class FileManager:
                 logger.error(f"Failed to delete file {f}: {e}")
         return deleted
 
-    def get_file_size(self, icloud_asset: PhotoAsset, version: VersionSize) -> int | None:
+    def get_file_size(self, asset_ref: AssetFileRef, version: VersionSize) -> int | None:
         """Get file size in bytes.
 
         Args:
@@ -205,7 +213,7 @@ class FileManager:
         Returns:
             File size in bytes or None if file doesn't exist
         """
-        file_path = self.get_file_path(icloud_asset, version)
+        file_path = self.get_file_path(asset_ref, version)
 
         try:
             if file_path.exists():

@@ -15,15 +15,15 @@ DATABASE_FILENAME = "_metadata.sqlite"
 DATA_DIRECTORY = "_data"
 
 # Version types to download
-DOWNLOAD_VERSIONS = [
+DOWNLOAD_VERSIONS: tuple[AssetVersionSize | LivePhotoVersionSize, ...] = (
     AssetVersionSize.ORIGINAL,
     LivePhotoVersionSize.ORIGINAL,
     AssetVersionSize.ADJUSTED,
     AssetVersionSize.ALTERNATIVE,
-]
+)
 
 # Supported file extensions for live photos
-LIVE_PHOTO_EXTENSIONS = [".mov", ".mp4"]
+LIVE_PHOTO_EXTENSIONS: tuple[str, ...] = (".mov", ".mp4")
 
 # Filesystem sync directories
 LIBRARY_DIRECTORY = "Library"

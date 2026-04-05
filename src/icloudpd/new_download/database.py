@@ -7,14 +7,37 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple
+from typing import Any, Dict, List, NamedTuple, Protocol
 
 from .constants import DATABASE_FILENAME
+
+
+class Clock(Protocol):
+    """Abstraction for current-time generation (testable, replaceable)."""
+
+    def now(self) -> str:
+        """Return current timestamp as ISO 8601 string."""
+        ...
+
+
+class SystemClock:
+    """Default clock that returns local system time."""
+
+    def now(self) -> str:
+        return datetime.now().isoformat()
 
 
 class UpsertResult(Enum):
     INSERTED = "inserted"
     UPDATED = "updated"
+
+
+class SyncState(Enum):
+    PENDING = "pending"
+    METADATA_PROCESSED = "metadata_processed"
+    DOWNLOADING = "downloading"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 @dataclass
 class ICloudAssetRecord:
@@ -70,7 +93,7 @@ class SyncStatus:
     """Sync status and progress tracking per file."""
     asset_id: str
     version_type: str  # e.g., "original", "adjusted", "alternative"
-    sync_status: str = "pending"  # pending, metadata_processed, downloading, completed, failed
+    sync_status: SyncState = SyncState.PENDING
     last_sync_date: str | None = None
     retry_count: int = 0
     error_message: str | None = None
@@ -118,211 +141,209 @@ class AlbumUpsertResult(NamedTuple):
 class PhotoDatabase:
     """SQLite database for tracking photo assets and download status."""
 
-    def __init__(self, base_directory: Path):
+    def __init__(self, base_directory: Path, clock: Clock | None = None):
         """Initialize database connection.
 
         Args:
             base_directory: Base directory where database will be stored
+            clock: Clock for timestamp generation (defaults to SystemClock)
         """
         self.base_directory = Path(base_directory)
         self.db_path = self.base_directory / DATABASE_FILENAME
+        self.clock = clock or SystemClock()
+        self._conn: sqlite3.Connection | None = None
         self._init_database()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get or create a persistent database connection."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path)
+        return self._conn
+
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def _init_database(self) -> None:
         """Initialize database and create tables if they don't exist."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with sqlite3.connect(self.db_path) as conn:
-            # iCloud metadata table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS icloud_assets (
-                    asset_id TEXT PRIMARY KEY,
-                    filename TEXT,
-                    asset_type TEXT,
-                    created_date DATETIME,
-                    added_date DATETIME,
-                    width INTEGER,
-                    height INTEGER,
-                    asset_subtype TEXT,
-                    asset_versions TEXT,
-                    master_record TEXT,
-                    asset_record TEXT,
-                    last_metadata_update DATETIME,
-                    metadata_inserted_date DATETIME,
-                    deleted BOOLEAN DEFAULT FALSE,
-                    deletion_detected_on DATETIME
-                )
-            """)
+        conn = self._get_connection()
+        # iCloud metadata table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS icloud_assets (
+                asset_id TEXT PRIMARY KEY,
+                filename TEXT,
+                asset_type TEXT,
+                created_date DATETIME,
+                added_date DATETIME,
+                width INTEGER,
+                height INTEGER,
+                asset_subtype TEXT,
+                asset_versions TEXT,
+                master_record TEXT,
+                asset_record TEXT,
+                last_metadata_update DATETIME,
+                metadata_inserted_date DATETIME,
+                deleted BOOLEAN DEFAULT FALSE,
+                deletion_detected_on DATETIME
+            )
+        """)
 
-            # Local files table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS local_files (
-                    asset_id TEXT,
-                    version_type TEXT,
-                    local_filename TEXT,
-                    file_path TEXT,
-                    file_size INTEGER,
-                    download_date DATETIME,
-                    checksum TEXT,
-                    PRIMARY KEY (asset_id, version_type),
-                    FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
-                )
-            """)
+        # Local files table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS local_files (
+                asset_id TEXT,
+                version_type TEXT,
+                local_filename TEXT,
+                file_path TEXT,
+                file_size INTEGER,
+                download_date DATETIME,
+                checksum TEXT,
+                PRIMARY KEY (asset_id, version_type),
+                FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
+            )
+        """)
 
-            # Sync status table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sync_status (
-                    asset_id TEXT,
-                    version_type TEXT,
-                    sync_status TEXT DEFAULT 'pending',
-                    last_sync_date DATETIME,
-                    retry_count INTEGER DEFAULT 0,
-                    error_message TEXT,
-                    PRIMARY KEY (asset_id, version_type),
-                    FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
-                )
-            """)
+        # Sync status table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_status (
+                asset_id TEXT,
+                version_type TEXT,
+                sync_status TEXT DEFAULT 'pending',
+                last_sync_date DATETIME,
+                retry_count INTEGER DEFAULT 0,
+                error_message TEXT,
+                PRIMARY KEY (asset_id, version_type),
+                FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
+            )
+        """)
 
-            # Folders table (tree structure via self-referencing parent)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS folders (
-                    folder_id TEXT PRIMARY KEY,
-                    folder_name TEXT NOT NULL,
-                    parent_folder_id TEXT,
-                    position INTEGER,
-                    last_sync_date DATETIME,
-                    inserted_date DATETIME,
-                    deleted BOOLEAN DEFAULT FALSE,
-                    deletion_detected_on DATETIME,
-                    FOREIGN KEY (parent_folder_id) REFERENCES folders(folder_id)
-                )
-            """)
+        # Folders table (tree structure via self-referencing parent)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS folders (
+                folder_id TEXT PRIMARY KEY,
+                folder_name TEXT NOT NULL,
+                parent_folder_id TEXT,
+                position INTEGER,
+                last_sync_date DATETIME,
+                inserted_date DATETIME,
+                deleted BOOLEAN DEFAULT FALSE,
+                deletion_detected_on DATETIME,
+                FOREIGN KEY (parent_folder_id) REFERENCES folders(folder_id)
+            )
+        """)
 
-            # Albums table (leaf nodes containing assets)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS albums (
-                    album_id TEXT PRIMARY KEY,
-                    album_name TEXT NOT NULL,
-                    album_type TEXT NOT NULL,
-                    folder_id TEXT,
-                    obj_type TEXT,
-                    list_type TEXT,
-                    position INTEGER,
-                    last_sync_date DATETIME,
-                    inserted_date DATETIME,
-                    deleted BOOLEAN DEFAULT FALSE,
-                    deletion_detected_on DATETIME,
-                    FOREIGN KEY (folder_id) REFERENCES folders(folder_id)
-                )
-            """)
+        # Albums table (leaf nodes containing assets)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS albums (
+                album_id TEXT PRIMARY KEY,
+                album_name TEXT NOT NULL,
+                album_type TEXT NOT NULL,
+                folder_id TEXT,
+                obj_type TEXT,
+                list_type TEXT,
+                position INTEGER,
+                last_sync_date DATETIME,
+                inserted_date DATETIME,
+                deleted BOOLEAN DEFAULT FALSE,
+                deletion_detected_on DATETIME,
+                FOREIGN KEY (folder_id) REFERENCES folders(folder_id)
+            )
+        """)
 
-            # Album-asset membership (junction table)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS album_assets (
-                    album_id TEXT NOT NULL,
-                    asset_id TEXT NOT NULL,
-                    position INTEGER,
-                    PRIMARY KEY (album_id, asset_id),
-                    FOREIGN KEY (album_id) REFERENCES albums(album_id),
-                    FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
-                )
-            """)
+        # Album-asset membership (junction table)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS album_assets (
+                album_id TEXT NOT NULL,
+                asset_id TEXT NOT NULL,
+                position INTEGER,
+                PRIMARY KEY (album_id, asset_id),
+                FOREIGN KEY (album_id) REFERENCES albums(album_id),
+                FOREIGN KEY (asset_id) REFERENCES icloud_assets(asset_id)
+            )
+        """)
 
-            # Create indexes for better performance
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_status ON sync_status(sync_status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_local_files_asset_id ON local_files(asset_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_folder_id ON albums(folder_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_album_assets_asset_id ON album_assets(asset_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_album_assets_album_id ON album_assets(album_id)")
+        # Create indexes for better performance
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sync_status ON sync_status(sync_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_local_files_asset_id ON local_files(asset_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_albums_folder_id ON albums(folder_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_album_assets_asset_id ON album_assets(asset_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_album_assets_album_id ON album_assets(album_id)")
 
-            conn.commit()
+        conn.commit()
 
     def _encode_asset_id(self, asset_id: str) -> str:
         """Encode asset_id as URL-safe base64."""
         return base64.urlsafe_b64encode(asset_id.encode()).decode().rstrip("=")
 
     def upsert_icloud_metadata(self, metadata: ICloudAssetRecord) -> ICloudAssetUpsertResult:
-        """Insert or update iCloud metadata for an asset.
+        """Insert or update iCloud metadata for an asset (does not mutate input)."""
+        inserted_date = metadata.metadata_inserted_date or self.clock.now()
+        now = self.clock.now()
 
-        Args:
-            metadata: ICloudAssetRecord instance with metadata_inserted_date set
+        conn = self._get_connection()
+        existing = conn.execute(
+            "SELECT 1 FROM icloud_assets WHERE asset_id = ?", (metadata.asset_id,)
+        ).fetchone()
+        is_insert = existing is None
 
-        Returns:
-            ICloudAssetUpsertResult with the record and operation type
-        """
-        # Set the metadata_inserted_date if not already set
-        if metadata.metadata_inserted_date is None:
-            metadata.metadata_inserted_date = datetime.now().isoformat()
-        
-        with sqlite3.connect(self.db_path) as conn:
-            # Use ON CONFLICT DO UPDATE with RETURNING to get the result
-            cursor = conn.execute(
-                """
-                INSERT INTO icloud_assets (
-                    asset_id, filename, asset_type, created_date, added_date,
-                    width, height, asset_subtype, asset_versions,
-                    master_record, asset_record, last_metadata_update, metadata_inserted_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(asset_id) DO UPDATE SET
-                    filename = excluded.filename,
-                    asset_type = excluded.asset_type,
-                    created_date = excluded.created_date,
-                    added_date = excluded.added_date,
-                    width = excluded.width,
-                    height = excluded.height,
-                    asset_subtype = excluded.asset_subtype,
-                    asset_versions = excluded.asset_versions,
-                    master_record = excluded.master_record,
-                    asset_record = excluded.asset_record,
-                    last_metadata_update = excluded.last_metadata_update
-                RETURNING asset_id, filename, asset_type, created_date, added_date,
-                          width, height, asset_subtype, asset_versions,
-                          master_record, asset_record, last_metadata_update, metadata_inserted_date
+        conn.execute(
+            """
+            INSERT INTO icloud_assets (
+                asset_id, filename, asset_type, created_date, added_date,
+                width, height, asset_subtype, asset_versions,
+                master_record, asset_record, last_metadata_update, metadata_inserted_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(asset_id) DO UPDATE SET
+                filename = excluded.filename,
+                asset_type = excluded.asset_type,
+                created_date = excluded.created_date,
+                added_date = excluded.added_date,
+                width = excluded.width,
+                height = excluded.height,
+                asset_subtype = excluded.asset_subtype,
+                asset_versions = excluded.asset_versions,
+                master_record = excluded.master_record,
+                asset_record = excluded.asset_record,
+                last_metadata_update = excluded.last_metadata_update
             """,
-                (
-                    metadata.asset_id,
-                    metadata.filename,
-                    metadata.asset_type,
-                    metadata.created_date,
-                    metadata.added_date,
-                    metadata.width,
-                    metadata.height,
-                    metadata.asset_subtype,
-                    json.dumps(metadata.asset_versions),
-                    json.dumps(metadata.master_record),
-                    json.dumps(metadata.asset_record),
-                    datetime.now().isoformat(),
-                    metadata.metadata_inserted_date,
-                ),
-            )
-            
-            # Get the returned row
-            row = cursor.fetchone()
-            if row is None:
-                raise RuntimeError("No row returned from upsert operation")
-            
-            # Parse the returned data
-            columns = [desc[0] for desc in cursor.description]
-            data = dict(zip(columns, row, strict=False))
-            
-            # Parse JSON fields
-            for field in ["asset_versions", "master_record", "asset_record"]:
-                if data[field]:
-                    data[field] = json.loads(data[field])
-                else:
-                    data[field] = {}
-            
-            # Create the returned record
-            returned_record = ICloudAssetRecord(**data)
-            
-            # Determine if it was an insert or update by comparing metadata_inserted_date
-            if returned_record.metadata_inserted_date == metadata.metadata_inserted_date:
-                operation = UpsertResult.INSERTED
+            (
+                metadata.asset_id, metadata.filename, metadata.asset_type,
+                metadata.created_date, metadata.added_date,
+                metadata.width, metadata.height, metadata.asset_subtype,
+                json.dumps(metadata.asset_versions),
+                json.dumps(metadata.master_record),
+                json.dumps(metadata.asset_record),
+                now, inserted_date,
+            ),
+        )
+
+        cursor = conn.execute(
+            """SELECT asset_id, filename, asset_type, created_date, added_date,
+                      width, height, asset_subtype, asset_versions,
+                      master_record, asset_record, last_metadata_update, metadata_inserted_date
+               FROM icloud_assets WHERE asset_id = ?""",
+            (metadata.asset_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("No row returned from upsert operation")
+
+        columns = [desc[0] for desc in cursor.description]
+        data = dict(zip(columns, row, strict=False))
+        for json_field in ["asset_versions", "master_record", "asset_record"]:
+            if data[json_field]:
+                data[json_field] = json.loads(data[json_field])
             else:
-                operation = UpsertResult.UPDATED
-            
-            conn.commit()
-            return ICloudAssetUpsertResult(record=returned_record, operation=operation)
+                data[json_field] = {}
+
+        returned_record = ICloudAssetRecord(**data)
+        operation = UpsertResult.INSERTED if is_insert else UpsertResult.UPDATED
+        conn.commit()
+        return ICloudAssetUpsertResult(record=returned_record, operation=operation)
 
     def upsert_local_file(self, local_file: LocalFileRecord) -> None:
         """Insert or update local file record.
@@ -330,25 +351,25 @@ class PhotoDatabase:
         Args:
             local_file: LocalFileRecord instance
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO local_files (
-                    asset_id, version_type, local_filename, file_path, file_size,
-                    download_date, checksum
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    local_file.asset_id,
-                    local_file.version_type,
-                    local_file.local_filename,
-                    local_file.file_path,
-                    local_file.file_size,
-                    local_file.download_date,
-                    local_file.checksum,
-                ),
-            )
-            conn.commit()
+        conn = self._get_connection()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO local_files (
+                asset_id, version_type, local_filename, file_path, file_size,
+                download_date, checksum
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                local_file.asset_id,
+                local_file.version_type,
+                local_file.local_filename,
+                local_file.file_path,
+                local_file.file_size,
+                local_file.download_date,
+                local_file.checksum,
+            ),
+        )
+        conn.commit()
 
     def upsert_sync_status(self, sync_status: SyncStatus) -> None:
         """Insert or update sync status for an asset.
@@ -356,23 +377,23 @@ class PhotoDatabase:
         Args:
             sync_status: SyncStatus instance
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO sync_status (
-                    asset_id, version_type, sync_status, last_sync_date, retry_count, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    sync_status.asset_id,
-                    sync_status.version_type,
-                    sync_status.sync_status,
-                    datetime.now().isoformat(),
-                    sync_status.retry_count,
-                    sync_status.error_message,
-                ),
-            )
-            conn.commit()
+        conn = self._get_connection()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO sync_status (
+                asset_id, version_type, sync_status, last_sync_date, retry_count, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            (
+                sync_status.asset_id,
+                sync_status.version_type,
+                sync_status.sync_status.value,
+                self.clock.now(),
+                sync_status.retry_count,
+                sync_status.error_message,
+            ),
+        )
+        conn.commit()
 
     def get_icloud_metadata(self, asset_id: str) -> ICloudAssetRecord | None:
         """Get iCloud metadata for an asset.
@@ -383,27 +404,27 @@ class PhotoDatabase:
         Returns:
             ICloudAssetMetadata or None if not found
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT * FROM icloud_assets WHERE asset_id = ?",
-                (asset_id,),
-            )
-            row = cursor.fetchone()
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM icloud_assets WHERE asset_id = ?",
+            (asset_id,),
+        )
+        row = cursor.fetchone()
 
-            if row is None:
-                return None
+        if row is None:
+            return None
 
-            columns = [desc[0] for desc in cursor.description]
-            data = dict(zip(columns, row, strict=False))
+        columns = [desc[0] for desc in cursor.description]
+        data = dict(zip(columns, row, strict=False))
 
-            # Parse JSON fields
-            for field in ["asset_versions", "master_record", "asset_record"]:
-                if data[field]:
-                    data[field] = json.loads(data[field])
-                else:
-                    data[field] = {}
+        # Parse JSON fields
+        for json_field in ["asset_versions", "master_record", "asset_record"]:
+            if data[json_field]:
+                data[json_field] = json.loads(data[json_field])
+            else:
+                data[json_field] = {}
 
-            return ICloudAssetRecord(**data)
+        return ICloudAssetRecord(**data)
 
     def get_local_files(self, asset_id: str) -> List[LocalFileRecord]:
         """Get all local files for an asset.
@@ -414,19 +435,19 @@ class PhotoDatabase:
         Returns:
             List of LocalFileRecord
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT * FROM local_files WHERE asset_id = ?",
-                (asset_id,),
-            )
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM local_files WHERE asset_id = ?",
+            (asset_id,),
+        )
 
-            files = []
-            for row in cursor.fetchall():
-                columns = [desc[0] for desc in cursor.description]
-                data = dict(zip(columns, row, strict=False))
-                files.append(LocalFileRecord(**data))
+        files = []
+        for row in cursor.fetchall():
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            files.append(LocalFileRecord(**data))
 
-            return files
+        return files
 
     def get_sync_status(self, asset_id: str, version_type: str) -> SyncStatus | None:
         """Get sync status for a specific asset version.
@@ -438,19 +459,20 @@ class PhotoDatabase:
         Returns:
             SyncStatus or None if not found
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT * FROM sync_status WHERE asset_id = ? AND version_type = ?",
-                (asset_id, version_type),
-            )
-            row = cursor.fetchone()
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM sync_status WHERE asset_id = ? AND version_type = ?",
+            (asset_id, version_type),
+        )
+        row = cursor.fetchone()
 
-            if row is None:
-                return None
+        if row is None:
+            return None
 
-            columns = [desc[0] for desc in cursor.description]
-            data = dict(zip(columns, row, strict=False))
-            return SyncStatus(**data)
+        columns = [desc[0] for desc in cursor.description]
+        data = dict(zip(columns, row, strict=False))
+        data["sync_status"] = SyncState(data["sync_status"])
+        return SyncStatus(**data)
 
     def get_all_sync_statuses(self, asset_id: str) -> List[SyncStatus]:
         """Get all sync statuses for an asset.
@@ -461,19 +483,90 @@ class PhotoDatabase:
         Returns:
             List of SyncStatus for all versions of the asset
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT * FROM sync_status WHERE asset_id = ?",
-                (asset_id,),
-            )
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM sync_status WHERE asset_id = ?",
+            (asset_id,),
+        )
 
-            statuses = []
-            for row in cursor.fetchall():
-                columns = [desc[0] for desc in cursor.description]
-                data = dict(zip(columns, row, strict=False))
-                statuses.append(SyncStatus(**data))
+        statuses = []
+        for row in cursor.fetchall():
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            data["sync_status"] = SyncState(data["sync_status"])
+            statuses.append(SyncStatus(**data))
 
-            return statuses
+        return statuses
+
+    def batch_upsert_sync_statuses(self, statuses: List[SyncStatus]) -> None:
+        """Insert or update multiple sync statuses in a single transaction."""
+        if not statuses:
+            return
+        conn = self._get_connection()
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO sync_status (
+                asset_id, version_type, sync_status, last_sync_date, retry_count, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            [
+                (
+                    s.asset_id,
+                    s.version_type,
+                    s.sync_status.value,
+                    self.clock.now(),
+                    s.retry_count,
+                    s.error_message,
+                )
+                for s in statuses
+            ],
+        )
+        conn.commit()
+
+    def get_sync_statuses_for_assets(self, asset_ids: List[str]) -> Dict[str, List[SyncStatus]]:
+        """Get sync statuses for multiple assets in one query.
+
+        Returns:
+            Dict mapping asset_id to list of SyncStatus records.
+        """
+        if not asset_ids:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in asset_ids)
+        cursor = conn.execute(
+            f"SELECT * FROM sync_status WHERE asset_id IN ({placeholders})",
+            asset_ids,
+        )
+        result: Dict[str, List[SyncStatus]] = {}
+        for row in cursor.fetchall():
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            data["sync_status"] = SyncState(data["sync_status"])
+            status = SyncStatus(**data)
+            result.setdefault(status.asset_id, []).append(status)
+        return result
+
+    def get_local_files_for_assets(self, asset_ids: List[str]) -> Dict[str, List[LocalFileRecord]]:
+        """Get local files for multiple assets in one query.
+
+        Returns:
+            Dict mapping asset_id to list of LocalFileRecord records.
+        """
+        if not asset_ids:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in asset_ids)
+        cursor = conn.execute(
+            f"SELECT * FROM local_files WHERE asset_id IN ({placeholders})",
+            asset_ids,
+        )
+        result: Dict[str, List[LocalFileRecord]] = {}
+        for row in cursor.fetchall():
+            columns = [desc[0] for desc in cursor.description]
+            data = dict(zip(columns, row, strict=False))
+            record = LocalFileRecord(**data)
+            result.setdefault(record.asset_id, []).append(record)
+        return result
 
     def get_assets_needing_metadata_sync(self) -> List[str]:
         """Get asset IDs that need metadata processing.
@@ -481,13 +574,13 @@ class PhotoDatabase:
         Returns:
             List of asset IDs that need metadata sync
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT DISTINCT asset_id FROM sync_status 
-                WHERE sync_status IN ('pending', 'failed')
-                   OR sync_status IS NULL
-            """)
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            SELECT DISTINCT asset_id FROM sync_status 
+            WHERE sync_status IN ('pending', 'failed')
+               OR sync_status IS NULL
+        """)
+        return [row[0] for row in cursor.fetchall()]
 
     def get_assets_needing_download(self) -> List[str]:
         """Get asset IDs that need downloading.
@@ -495,16 +588,16 @@ class PhotoDatabase:
         Returns:
             List of asset IDs that need downloading
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT DISTINCT ss.asset_id 
-                FROM sync_status ss
-                LEFT JOIN local_files lf ON ss.asset_id = lf.asset_id 
-                    AND ss.version_type = lf.version_type
-                WHERE lf.asset_id IS NULL
-                  AND ss.sync_status = 'metadata_processed'
-            """)
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            SELECT DISTINCT ss.asset_id 
+            FROM sync_status ss
+            LEFT JOIN local_files lf ON ss.asset_id = lf.asset_id 
+                AND ss.version_type = lf.version_type
+            WHERE lf.asset_id IS NULL
+              AND ss.sync_status = 'metadata_processed'
+        """)
+        return [row[0] for row in cursor.fetchall()]
 
     def get_asset_count(self) -> int:
         """Get total number of assets in database.
@@ -512,9 +605,9 @@ class PhotoDatabase:
         Returns:
             Total count of assets
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT COUNT(*) FROM icloud_assets")
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute("SELECT COUNT(*) FROM icloud_assets")
+        return cursor.fetchone()[0]
 
     def get_downloaded_count(self) -> int:
         """Get count of fully downloaded assets.
@@ -522,11 +615,11 @@ class PhotoDatabase:
         Returns:
             Count of fully downloaded assets
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT COUNT(DISTINCT asset_id) FROM local_files
-            """)
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            SELECT COUNT(DISTINCT asset_id) FROM local_files
+        """)
+        return cursor.fetchone()[0]
 
     def get_all_asset_ids(self) -> List[str]:
         """Get all non-deleted asset IDs for deletion detection diff.
@@ -534,11 +627,11 @@ class PhotoDatabase:
         Returns:
             List of asset IDs not yet tombstoned
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT asset_id FROM icloud_assets WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT asset_id FROM icloud_assets WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return [row[0] for row in cursor.fetchall()]
 
     def mark_asset_deleted(self, asset_id: str, detected_on: str) -> None:
         """Tombstone an asset and remove its operational child records.
@@ -551,15 +644,15 @@ class PhotoDatabase:
             asset_id: The iCloud asset ID
             detected_on: ISO 8601 timestamp (with UTC offset) when deletion was detected
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE icloud_assets SET deleted = TRUE, deletion_detected_on = ? WHERE asset_id = ?",
-                (detected_on, asset_id),
-            )
-            conn.execute("DELETE FROM sync_status WHERE asset_id = ?", (asset_id,))
-            conn.execute("DELETE FROM local_files WHERE asset_id = ?", (asset_id,))
-            conn.execute("DELETE FROM album_assets WHERE asset_id = ?", (asset_id,))
-            conn.commit()
+        conn = self._get_connection()
+        conn.execute(
+            "UPDATE icloud_assets SET deleted = TRUE, deletion_detected_on = ? WHERE asset_id = ?",
+            (detected_on, asset_id),
+        )
+        conn.execute("DELETE FROM sync_status WHERE asset_id = ?", (asset_id,))
+        conn.execute("DELETE FROM local_files WHERE asset_id = ?", (asset_id,))
+        conn.execute("DELETE FROM album_assets WHERE asset_id = ?", (asset_id,))
+        conn.commit()
 
     def get_deleted_asset_count(self) -> int:
         """Get count of tombstoned assets.
@@ -567,11 +660,11 @@ class PhotoDatabase:
         Returns:
             Count of assets marked as deleted from iCloud
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM icloud_assets WHERE deleted = TRUE"
-            )
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM icloud_assets WHERE deleted = TRUE"
+        )
+        return cursor.fetchone()[0]
 
     def get_metadata_processed_count(self) -> int:
         """Get count of assets with metadata processed.
@@ -579,12 +672,12 @@ class PhotoDatabase:
         Returns:
             Count of assets with metadata processed
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT COUNT(DISTINCT asset_id) FROM sync_status 
-                WHERE sync_status = 'metadata_processed'
-            """)
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            SELECT COUNT(DISTINCT asset_id) FROM sync_status 
+            WHERE sync_status = 'metadata_processed'
+        """)
+        return cursor.fetchone()[0]
 
     def get_pending_download_count(self) -> int:
         """Get count of assets pending download.
@@ -592,274 +685,269 @@ class PhotoDatabase:
         Returns:
             Count of assets pending download
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                SELECT COUNT(DISTINCT ss.asset_id) 
-                FROM sync_status ss
-                LEFT JOIN local_files lf ON ss.asset_id = lf.asset_id 
-                    AND ss.version_type = lf.version_type
-                WHERE lf.asset_id IS NULL
-                  AND ss.sync_status = 'metadata_processed'
-            """)
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute("""
+            SELECT COUNT(DISTINCT ss.asset_id) 
+            FROM sync_status ss
+            LEFT JOIN local_files lf ON ss.asset_id = lf.asset_id 
+                AND ss.version_type = lf.version_type
+            WHERE lf.asset_id IS NULL
+              AND ss.sync_status = 'metadata_processed'
+        """)
+        return cursor.fetchone()[0]
 
     # -- Folder methods ---------------------------------------------------------
 
     def upsert_folder(self, folder: FolderRecord) -> FolderUpsertResult:
-        """Insert or update a folder record."""
-        if folder.inserted_date is None:
-            folder.inserted_date = datetime.now().isoformat()
+        """Insert or update a folder record (does not mutate input)."""
+        inserted_date = folder.inserted_date or self.clock.now()
+        now = self.clock.now()
 
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO folders (
-                    folder_id, folder_name, parent_folder_id, position,
-                    last_sync_date, inserted_date
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(folder_id) DO UPDATE SET
-                    folder_name = excluded.folder_name,
-                    parent_folder_id = excluded.parent_folder_id,
-                    position = excluded.position,
-                    last_sync_date = excluded.last_sync_date,
-                    deleted = FALSE,
-                    deletion_detected_on = NULL
-                RETURNING folder_id, folder_name, parent_folder_id, position,
-                          last_sync_date, inserted_date, deleted, deletion_detected_on
-                """,
-                (
-                    folder.folder_id,
-                    folder.folder_name,
-                    folder.parent_folder_id,
-                    folder.position,
-                    datetime.now().isoformat(),
-                    folder.inserted_date,
-                ),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise RuntimeError("No row returned from folder upsert")
+        conn = self._get_connection()
+        existing = conn.execute(
+            "SELECT 1 FROM folders WHERE folder_id = ?", (folder.folder_id,)
+        ).fetchone()
+        is_insert = existing is None
 
-            columns = [desc[0] for desc in cursor.description]
-            data = dict(zip(columns, row, strict=False))
-            returned = FolderRecord(**data)
+        conn.execute(
+            """
+            INSERT INTO folders (
+                folder_id, folder_name, parent_folder_id, position,
+                last_sync_date, inserted_date
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(folder_id) DO UPDATE SET
+                folder_name = excluded.folder_name,
+                parent_folder_id = excluded.parent_folder_id,
+                position = excluded.position,
+                last_sync_date = excluded.last_sync_date,
+                deleted = FALSE,
+                deletion_detected_on = NULL
+            """,
+            (folder.folder_id, folder.folder_name, folder.parent_folder_id,
+             folder.position, now, inserted_date),
+        )
 
-            operation = (
-                UpsertResult.INSERTED
-                if returned.inserted_date == folder.inserted_date
-                else UpsertResult.UPDATED
-            )
-            conn.commit()
-            return FolderUpsertResult(record=returned, operation=operation)
+        cursor = conn.execute(
+            """SELECT folder_id, folder_name, parent_folder_id, position,
+                      last_sync_date, inserted_date, deleted, deletion_detected_on
+               FROM folders WHERE folder_id = ?""",
+            (folder.folder_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("No row returned from folder upsert")
+
+        columns = [desc[0] for desc in cursor.description]
+        data = dict(zip(columns, row, strict=False))
+        returned = FolderRecord(**data)
+        operation = UpsertResult.INSERTED if is_insert else UpsertResult.UPDATED
+        conn.commit()
+        return FolderUpsertResult(record=returned, operation=operation)
 
     def get_all_folder_ids(self) -> list[str]:
         """Get all non-deleted folder IDs."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT folder_id FROM folders WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT folder_id FROM folders WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return [row[0] for row in cursor.fetchall()]
 
     def mark_folder_deleted(self, folder_id: str, detected_on: str) -> None:
         """Tombstone a folder and remove its album_assets via child albums."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE folders SET deleted = TRUE, deletion_detected_on = ? WHERE folder_id = ?",
-                (detected_on, folder_id),
-            )
-            conn.commit()
+        conn = self._get_connection()
+        conn.execute(
+            "UPDATE folders SET deleted = TRUE, deletion_detected_on = ? WHERE folder_id = ?",
+            (detected_on, folder_id),
+        )
+        conn.commit()
 
     # -- Album methods ----------------------------------------------------------
 
     def upsert_album(self, album: AlbumRecord) -> AlbumUpsertResult:
-        """Insert or update an album record."""
-        if album.inserted_date is None:
-            album.inserted_date = datetime.now().isoformat()
+        """Insert or update an album record (does not mutate input)."""
+        inserted_date = album.inserted_date or self.clock.now()
+        now = self.clock.now()
 
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO albums (
-                    album_id, album_name, album_type, folder_id,
-                    obj_type, list_type, position,
-                    last_sync_date, inserted_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(album_id) DO UPDATE SET
-                    album_name = excluded.album_name,
-                    album_type = excluded.album_type,
-                    folder_id = excluded.folder_id,
-                    obj_type = excluded.obj_type,
-                    list_type = excluded.list_type,
-                    position = excluded.position,
-                    last_sync_date = excluded.last_sync_date,
-                    deleted = FALSE,
-                    deletion_detected_on = NULL
-                RETURNING album_id, album_name, album_type, folder_id,
-                          obj_type, list_type, position,
-                          last_sync_date, inserted_date, deleted, deletion_detected_on
-                """,
-                (
-                    album.album_id,
-                    album.album_name,
-                    album.album_type,
-                    album.folder_id,
-                    album.obj_type,
-                    album.list_type,
-                    album.position,
-                    datetime.now().isoformat(),
-                    album.inserted_date,
-                ),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise RuntimeError("No row returned from album upsert")
+        conn = self._get_connection()
+        existing = conn.execute(
+            "SELECT 1 FROM albums WHERE album_id = ?", (album.album_id,)
+        ).fetchone()
+        is_insert = existing is None
 
-            columns = [desc[0] for desc in cursor.description]
-            data = dict(zip(columns, row, strict=False))
-            returned = AlbumRecord(**data)
+        conn.execute(
+            """
+            INSERT INTO albums (
+                album_id, album_name, album_type, folder_id,
+                obj_type, list_type, position,
+                last_sync_date, inserted_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(album_id) DO UPDATE SET
+                album_name = excluded.album_name,
+                album_type = excluded.album_type,
+                folder_id = excluded.folder_id,
+                obj_type = excluded.obj_type,
+                list_type = excluded.list_type,
+                position = excluded.position,
+                last_sync_date = excluded.last_sync_date,
+                deleted = FALSE,
+                deletion_detected_on = NULL
+            """,
+            (album.album_id, album.album_name, album.album_type, album.folder_id,
+             album.obj_type, album.list_type, album.position, now, inserted_date),
+        )
 
-            operation = (
-                UpsertResult.INSERTED
-                if returned.inserted_date == album.inserted_date
-                else UpsertResult.UPDATED
-            )
-            conn.commit()
-            return AlbumUpsertResult(record=returned, operation=operation)
+        cursor = conn.execute(
+            """SELECT album_id, album_name, album_type, folder_id,
+                      obj_type, list_type, position,
+                      last_sync_date, inserted_date, deleted, deletion_detected_on
+               FROM albums WHERE album_id = ?""",
+            (album.album_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("No row returned from album upsert")
+
+        columns = [desc[0] for desc in cursor.description]
+        data = dict(zip(columns, row, strict=False))
+        returned = AlbumRecord(**data)
+        operation = UpsertResult.INSERTED if is_insert else UpsertResult.UPDATED
+        conn.commit()
+        return AlbumUpsertResult(record=returned, operation=operation)
 
     def get_all_album_ids(self) -> list[str]:
         """Get all non-deleted album IDs."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT album_id FROM albums WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT album_id FROM albums WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return [row[0] for row in cursor.fetchall()]
 
     def mark_album_deleted(self, album_id: str, detected_on: str) -> None:
         """Tombstone an album and remove its membership rows."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE albums SET deleted = TRUE, deletion_detected_on = ? WHERE album_id = ?",
-                (detected_on, album_id),
-            )
-            conn.execute("DELETE FROM album_assets WHERE album_id = ?", (album_id,))
-            conn.commit()
+        conn = self._get_connection()
+        conn.execute(
+            "UPDATE albums SET deleted = TRUE, deletion_detected_on = ? WHERE album_id = ?",
+            (detected_on, album_id),
+        )
+        conn.execute("DELETE FROM album_assets WHERE album_id = ?", (album_id,))
+        conn.commit()
 
     def replace_album_assets(self, album_id: str, asset_ids: list[str]) -> int:
         """Full-replace membership for an album. Returns count of inserted rows."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM album_assets WHERE album_id = ?", (album_id,))
-            for position, asset_id in enumerate(asset_ids):
-                conn.execute(
-                    "INSERT OR IGNORE INTO album_assets (album_id, asset_id, position) VALUES (?, ?, ?)",
-                    (album_id, asset_id, position),
-                )
-            conn.commit()
-            return len(asset_ids)
+        conn = self._get_connection()
+        conn.execute("DELETE FROM album_assets WHERE album_id = ?", (album_id,))
+        for position, asset_id in enumerate(asset_ids):
+            conn.execute(
+                "INSERT OR IGNORE INTO album_assets (album_id, asset_id, position) VALUES (?, ?, ?)",
+                (album_id, asset_id, position),
+            )
+        conn.commit()
+        return len(asset_ids)
 
     def get_album_assets(self, album_id: str) -> list[str]:
         """Get all asset IDs belonging to an album, ordered by position."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT asset_id FROM album_assets WHERE album_id = ? ORDER BY position",
-                (album_id,),
-            )
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT asset_id FROM album_assets WHERE album_id = ? ORDER BY position",
+            (album_id,),
+        )
+        return [row[0] for row in cursor.fetchall()]
 
     def get_asset_albums(self, asset_id: str) -> list[str]:
         """Get all album IDs that contain a given asset."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT album_id FROM album_assets WHERE asset_id = ?",
-                (asset_id,),
-            )
-            return [row[0] for row in cursor.fetchall()]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT album_id FROM album_assets WHERE asset_id = ?",
+            (asset_id,),
+        )
+        return [row[0] for row in cursor.fetchall()]
 
     def get_album_count(self) -> int:
         """Get total number of non-deleted albums."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM albums WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM albums WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return cursor.fetchone()[0]
 
     def get_folder_count(self) -> int:
         """Get total number of non-deleted folders."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM folders WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return cursor.fetchone()[0]
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM folders WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return cursor.fetchone()[0]
 
     # -- Bulk queries for filesystem sync ----------------------------------------
 
     def get_all_non_deleted_albums(self) -> list[AlbumRecord]:
         """Get all non-deleted album records (full objects)."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM albums WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return [AlbumRecord(**dict(row)) for row in cursor.fetchall()]
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT * FROM albums WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return [AlbumRecord(**dict(row)) for row in cursor.fetchall()]
 
     def get_all_non_deleted_folders(self) -> list[FolderRecord]:
         """Get all non-deleted folder records (full objects)."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM folders WHERE deleted = FALSE OR deleted IS NULL"
-            )
-            return [FolderRecord(**dict(row)) for row in cursor.fetchall()]
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            "SELECT * FROM folders WHERE deleted = FALSE OR deleted IS NULL"
+        )
+        return [FolderRecord(**dict(row)) for row in cursor.fetchall()]
 
     def get_all_downloaded_assets(
         self,
     ) -> list[tuple[ICloudAssetRecord, list[LocalFileRecord]]]:
         """Get all non-deleted assets that have at least one local file."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
 
-            rows = conn.execute("""
-                SELECT a.*, lf.version_type AS lf_version_type,
-                       lf.local_filename AS lf_local_filename,
-                       lf.file_path AS lf_file_path,
-                       lf.file_size AS lf_file_size,
-                       lf.download_date AS lf_download_date,
-                       lf.checksum AS lf_checksum
-                FROM icloud_assets a
-                JOIN local_files lf ON a.asset_id = lf.asset_id
-                WHERE (a.deleted = FALSE OR a.deleted IS NULL)
-                ORDER BY a.asset_id, lf.version_type
-            """).fetchall()
+        rows = conn.execute("""
+            SELECT a.*, lf.version_type AS lf_version_type,
+                   lf.local_filename AS lf_local_filename,
+                   lf.file_path AS lf_file_path,
+                   lf.file_size AS lf_file_size,
+                   lf.download_date AS lf_download_date,
+                   lf.checksum AS lf_checksum
+            FROM icloud_assets a
+            JOIN local_files lf ON a.asset_id = lf.asset_id
+            WHERE (a.deleted = FALSE OR a.deleted IS NULL)
+            ORDER BY a.asset_id, lf.version_type
+        """).fetchall()
 
-            result: list[tuple[ICloudAssetRecord, list[LocalFileRecord]]] = []
-            current_asset: ICloudAssetRecord | None = None
-            current_files: list[LocalFileRecord] = []
+        result: list[tuple[ICloudAssetRecord, list[LocalFileRecord]]] = []
+        current_asset: ICloudAssetRecord | None = None
+        current_files: list[LocalFileRecord] = []
 
-            for row in rows:
-                row_dict = dict(row)
-                asset_id = row_dict["asset_id"]
+        for row in rows:
+            row_dict = dict(row)
+            asset_id = row_dict["asset_id"]
 
-                if current_asset is None or current_asset.asset_id != asset_id:
-                    if current_asset is not None:
-                        result.append((current_asset, current_files))
-                    current_asset = self._row_to_asset_record(row_dict)
-                    current_files = []
+            if current_asset is None or current_asset.asset_id != asset_id:
+                if current_asset is not None:
+                    result.append((current_asset, current_files))
+                current_asset = self._row_to_asset_record(row_dict)
+                current_files = []
 
-                current_files.append(
-                    LocalFileRecord(
-                        asset_id=asset_id,
-                        version_type=row_dict["lf_version_type"],
-                        local_filename=row_dict["lf_local_filename"],
-                        file_path=row_dict["lf_file_path"],
-                        file_size=row_dict["lf_file_size"],
-                        download_date=row_dict["lf_download_date"],
-                        checksum=row_dict["lf_checksum"],
-                    )
+            current_files.append(
+                LocalFileRecord(
+                    asset_id=asset_id,
+                    version_type=row_dict["lf_version_type"],
+                    local_filename=row_dict["lf_local_filename"],
+                    file_path=row_dict["lf_file_path"],
+                    file_size=row_dict["lf_file_size"],
+                    download_date=row_dict["lf_download_date"],
+                    checksum=row_dict["lf_checksum"],
                 )
+            )
 
-            if current_asset is not None:
-                result.append((current_asset, current_files))
+        if current_asset is not None:
+            result.append((current_asset, current_files))
 
-            return result
+        return result
 
     @staticmethod
     def _row_to_asset_record(row_dict: dict[str, Any]) -> ICloudAssetRecord:
@@ -909,16 +997,16 @@ class PhotoDatabase:
         last_sync_date = None
         if sync_statuses:
             # If any status is failed, overall is failed
-            if any(s.sync_status == "failed" for s in sync_statuses):
+            if any(s.sync_status == SyncState.FAILED for s in sync_statuses):
                 overall_status = "failed"
             # If all are completed, overall is completed
-            elif all(s.sync_status == "completed" for s in sync_statuses):
+            elif all(s.sync_status == SyncState.COMPLETED for s in sync_statuses):
                 overall_status = "completed"
             # If any are downloading, overall is downloading
-            elif any(s.sync_status == "downloading" for s in sync_statuses):
+            elif any(s.sync_status == SyncState.DOWNLOADING for s in sync_statuses):
                 overall_status = "downloading"
             # If any are metadata_processed, overall is metadata_processed
-            elif any(s.sync_status == "metadata_processed" for s in sync_statuses):
+            elif any(s.sync_status == SyncState.METADATA_PROCESSED for s in sync_statuses):
                 overall_status = "metadata_processed"
             
             # Get the most recent sync date

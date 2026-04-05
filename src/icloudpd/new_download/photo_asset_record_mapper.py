@@ -2,12 +2,12 @@
 
 import base64
 import logging
-from datetime import datetime
 from typing import List
 
 from pyicloud_ipd.services.photos import PhotoAsset
 
-from .database import ICloudAssetRecord, SyncStatus
+from .database import ICloudAssetRecord, SyncState, SyncStatus
+from .file_manager import AssetFileRef
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +16,18 @@ class PhotoAssetRecordMapper:
     """Maps a PhotoAsset to separate database records for the new architecture."""
 
     @staticmethod
+    def to_file_ref(asset: PhotoAsset) -> AssetFileRef:
+        """Create a lightweight file reference from a PhotoAsset."""
+        return AssetFileRef(asset_id=asset.id, filename=asset.filename)
+
+    @staticmethod
     def _encode_asset_id(asset_id: str) -> str:
         """Encode asset_id as URL-safe base64."""
         return base64.urlsafe_b64encode(asset_id.encode()).decode().rstrip("=")
 
     @staticmethod
-    def map_icloud_metadata(asset: PhotoAsset) -> ICloudAssetRecord:
-        """Map PhotoAsset to ICloudAssetMetadata."""
-        # Extract asset versions as dictionary with version_size as key
+    def map_icloud_metadata(asset: PhotoAsset, now: str) -> ICloudAssetRecord:
+        """Map PhotoAsset to ICloudAssetRecord (pure: no side effects)."""
         asset_versions = {}
 
         for version_size in asset.versions:
@@ -46,7 +50,7 @@ class PhotoAssetRecordMapper:
             asset_versions=asset_versions,
             master_record=asset._master_record,
             asset_record=asset._asset_record,
-            metadata_inserted_date=datetime.now().isoformat(),
+            metadata_inserted_date=now,
         )
 
     @staticmethod
@@ -58,7 +62,7 @@ class PhotoAssetRecordMapper:
                 SyncStatus(
                     asset_id=asset.id,
                     version_type=version_size.value,
-                    sync_status="pending",
+                    sync_status=SyncState.PENDING,
                     retry_count=0,
                 )
             )

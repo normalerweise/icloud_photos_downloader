@@ -13,6 +13,7 @@ from pyicloud_ipd.version_size import VersionSize
 
 from .constants import MAX_CONCURRENT_DOWNLOADS, RETRY_ATTEMPTS, RETRY_DELAY
 from .file_manager import FileManager
+from .photo_asset_record_mapper import PhotoAssetRecordMapper
 
 logger = logging.getLogger(__name__)
 
@@ -20,22 +21,24 @@ logger = logging.getLogger(__name__)
 class DownloadManager:
     """Manage parallel downloads with retry logic."""
 
-    def __init__(self, file_manager: FileManager, session: PyiCloudSession):
+    def __init__(self, file_manager: FileManager, session: PyiCloudSession, mapper: PhotoAssetRecordMapper):
         """Initialize download manager.
 
         Args:
             file_manager: File manager instance
             session: Authenticated iCloud session for downloads
+            mapper: Mapper for creating lightweight asset references
         """
         self.file_manager = file_manager
         self.session = session
+        self.mapper = mapper
 
     def download_asset_versions(
         self,
         asset: ICloudAssetRecord,
         icloud_asset: PhotoAsset,
         versions_to_download: List[VersionSize],
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[VersionSize], List[VersionSize]]:
         """Download all requested versions for an asset.
 
         Args:
@@ -44,7 +47,7 @@ class DownloadManager:
             versions_to_download: List of VersionSize enums to download
 
         Returns:
-            Tuple of (downloaded_version_values, failed_version_values)
+            Tuple of (downloaded_versions, failed_versions) as VersionSize objects
         """
         asset_id: str = asset.asset_id
 
@@ -54,26 +57,25 @@ class DownloadManager:
 
         logger.info(f"Downloading {len(versions_to_download)} versions for asset {asset_id}")
 
-        # Download versions in parallel
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS) as executor:
             future_to_version: Dict[Any, VersionSize] = {}
             for version in versions_to_download:
                 future = executor.submit(self._download_single_version, version, icloud_asset)
                 future_to_version[future] = version
 
-            downloaded_versions: List[str] = []
-            failed_versions: List[str] = []
+            downloaded_versions: List[VersionSize] = []
+            failed_versions: List[VersionSize] = []
             for future in as_completed(future_to_version):
                 version = future_to_version[future]
                 try:
                     success = future.result()
                     if success:
-                        downloaded_versions.append(version.value)
+                        downloaded_versions.append(version)
                     else:
-                        failed_versions.append(version.value)
+                        failed_versions.append(version)
                 except Exception as e:
                     logger.error(f"Download failed for asset {asset_id} version {version}: {e}")
-                    failed_versions.append(version.value)
+                    failed_versions.append(version)
 
         return downloaded_versions, failed_versions
 
@@ -95,7 +97,8 @@ class DownloadManager:
                     logger.error(f"No download URL found for asset {asset_id} version {version}")
                     return False
 
-                file_path = self.file_manager.get_file_path(icloud_asset, version)
+                asset_ref = self.mapper.to_file_ref(icloud_asset)
+                file_path = self.file_manager.get_file_path(asset_ref, version)
 
                 success = self._download_from_asset(icloud_asset, download_url, file_path)
                 if success:

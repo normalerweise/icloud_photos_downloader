@@ -12,12 +12,16 @@ from icloudpd.new_download.database import (
     ICloudAssetRecord,
     LocalFileRecord,
     PhotoDatabase,
+    SyncState,
     SyncStatus,
     UpsertResult,
 )
-from icloudpd.new_download.file_manager import FileManager
+from icloudpd.new_download.download_manager import DownloadManager
+from icloudpd.new_download.file_manager import AssetFileRef, FileManager
+from icloudpd.new_download.filesystem_sync import FilesystemSync
 from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
-from icloudpd.new_download.sync_manager import SyncManager
+from icloudpd.new_download.progress_reporter import LoggingProgressReporter
+from icloudpd.new_download.sync_manager import SyncManager, resolve_version_size
 from icloudpd.new_download.sync_strategy import (
     NoOpStrategy,
     RecentPhotosStrategy,
@@ -119,13 +123,13 @@ class TestPhotoDatabase:
         status = SyncStatus(
             asset_id="test123",
             version_type="original",
-            sync_status="metadata_processed",
+            sync_status=SyncState.METADATA_PROCESSED,
         )
         self.db.upsert_sync_status(status)
 
         retrieved = self.db.get_sync_status("test123", "original")
         assert retrieved is not None
-        assert retrieved.sync_status == "metadata_processed"
+        assert retrieved.sync_status == SyncState.METADATA_PROCESSED
 
     def test_get_assets_needing_download(self) -> None:
         record = ICloudAssetRecord(asset_id="test123", filename="test.jpg")
@@ -134,7 +138,7 @@ class TestPhotoDatabase:
         status = SyncStatus(
             asset_id="test123",
             version_type="original",
-            sync_status="metadata_processed",
+            sync_status=SyncState.METADATA_PROCESSED,
         )
         self.db.upsert_sync_status(status)
 
@@ -179,27 +183,27 @@ class TestFileManager:
         shutil.rmtree(self.temp_dir)
 
     def test_get_file_path(self) -> None:
-        mock_asset = _make_mock_asset()
-        path = self.file_manager.get_file_path(mock_asset, AssetVersionSize.ORIGINAL)
+        asset_ref = AssetFileRef(asset_id="test-asset-123", filename="IMG_001.jpg")
+        path = self.file_manager.get_file_path(asset_ref, AssetVersionSize.ORIGINAL)
 
         assert path.parent == Path(self.temp_dir) / "_data"
         assert path.suffix == ".jpg"
         assert "original" in path.name
 
     def test_save_and_check_file(self) -> None:
-        mock_asset = _make_mock_asset()
+        asset_ref = AssetFileRef(asset_id="test-asset-123", filename="IMG_001.jpg")
         content = b"test file content"
-        success = self.file_manager.save_file(mock_asset, AssetVersionSize.ORIGINAL, content)
+        success = self.file_manager.save_file(asset_ref, AssetVersionSize.ORIGINAL, content)
 
         assert success is True
-        assert self.file_manager.file_exists(mock_asset, AssetVersionSize.ORIGINAL) is True
+        assert self.file_manager.file_exists(asset_ref, AssetVersionSize.ORIGINAL) is True
 
     def test_get_file_size(self) -> None:
-        mock_asset = _make_mock_asset()
+        asset_ref = AssetFileRef(asset_id="test-asset-123", filename="IMG_001.jpg")
         content = b"test file content"
-        self.file_manager.save_file(mock_asset, AssetVersionSize.ORIGINAL, content)
+        self.file_manager.save_file(asset_ref, AssetVersionSize.ORIGINAL, content)
 
-        size = self.file_manager.get_file_size(mock_asset, AssetVersionSize.ORIGINAL)
+        size = self.file_manager.get_file_size(asset_ref, AssetVersionSize.ORIGINAL)
         assert size == len(content)
 
     def test_cleanup_incomplete_downloads(self) -> None:
@@ -217,7 +221,7 @@ class TestPhotoAssetRecordMapper:
     def test_map_icloud_metadata(self) -> None:
         mock_asset = _make_mock_asset()
         mapper = PhotoAssetRecordMapper()
-        record = mapper.map_icloud_metadata(mock_asset)
+        record = mapper.map_icloud_metadata(mock_asset, "2024-01-15T10:30:00")
 
         assert record.asset_id == "AYk6Y+tESR"
         assert record.filename == "IMG_7409.JPG"
@@ -232,7 +236,7 @@ class TestPhotoAssetRecordMapper:
         statuses = mapper.map_sync_statuses(mock_asset)
 
         assert len(statuses) == 2
-        assert all(s.sync_status == "pending" for s in statuses)
+        assert all(s.sync_status == SyncState.PENDING for s in statuses)
         version_types = {s.version_type for s in statuses}
         assert "original" in version_types
         assert "adjusted" in version_types
@@ -243,14 +247,29 @@ class TestSyncManager:
 
     def setup_method(self) -> None:
         self.temp_dir = tempfile.mkdtemp()
-        self.sync_manager = SyncManager(Path(self.temp_dir), Mock())
+        base_dir = Path(self.temp_dir)
+        self.database = PhotoDatabase(base_dir)
+        self.file_manager = FileManager(base_dir)
+        self.mapper = PhotoAssetRecordMapper()
+        self.download_manager = DownloadManager(self.file_manager, Mock(), self.mapper)
+        self.filesystem_sync = FilesystemSync(base_dir, self.database)
+        self.progress_reporter = LoggingProgressReporter()
+        self.sync_manager = SyncManager(
+            base_dir,
+            self.database,
+            self.file_manager,
+            self.mapper,
+            self.download_manager,
+            self.filesystem_sync,
+            self.progress_reporter,
+        )
 
     def teardown_method(self) -> None:
         shutil.rmtree(self.temp_dir)
         self.sync_manager.cleanup()
 
     def test_get_sync_stats_empty(self) -> None:
-        stats = self.sync_manager._get_sync_stats()
+        stats = self.sync_manager._get_sync_stats(deleted_count=0)
 
         assert stats["total_assets"] == 0
         assert stats["downloaded_assets"] == 0
@@ -260,13 +279,13 @@ class TestSyncManager:
     def test_resolve_version_size(self) -> None:
         mock_asset = _make_mock_asset()
 
-        resolved = SyncManager._resolve_version_size("original", mock_asset)
+        resolved = resolve_version_size("original", mock_asset.versions)
         assert resolved == AssetVersionSize.ORIGINAL
 
-        resolved = SyncManager._resolve_version_size("adjusted", mock_asset)
+        resolved = resolve_version_size("adjusted", mock_asset.versions)
         assert resolved == AssetVersionSize.ADJUSTED
 
-        resolved = SyncManager._resolve_version_size("nonexistent", mock_asset)
+        resolved = resolve_version_size("nonexistent", mock_asset.versions)
         assert resolved is None
 
     def test_phase3_tombstones_db_without_file_deletion(self) -> None:
@@ -285,9 +304,9 @@ class TestSyncManager:
         # asset_map only contains "keep-1" — simulates iCloud after deletion
         asset_map = {"keep-1": _make_mock_asset("keep-1", "keep.jpg")}
 
-        self.sync_manager._phase3_reconcile_deletions(asset_map, set(), set())
+        deleted_count = self.sync_manager._phase3_reconcile_deletions(asset_map, set(), set())
 
-        assert self.sync_manager._deleted_count == 2
+        assert deleted_count == 2
 
         # Local files are NOT removed (Phase 3 is DB-only; Phase 5 will handle files)
         assert (fm.data_directory / "Z29uZS0x-original.jpg").exists()
@@ -313,19 +332,19 @@ class TestSyncManager:
         db.mark_asset_deleted("gone-1", detected_on)
 
         # Second run: asset still absent from iCloud
-        self.sync_manager._phase3_reconcile_deletions({}, set(), set())
+        deleted_count = self.sync_manager._phase3_reconcile_deletions({}, set(), set())
 
         # Already tombstoned — not counted as a new deletion
-        assert self.sync_manager._deleted_count == 0
+        assert deleted_count == 0
 
     def test_phase3_noop_when_nothing_deleted(self) -> None:
         db = self.sync_manager.database
         db.upsert_icloud_metadata(ICloudAssetRecord(asset_id="keep-1", filename="keep.jpg"))
 
         asset_map = {"keep-1": _make_mock_asset("keep-1", "keep.jpg")}
-        self.sync_manager._phase3_reconcile_deletions(asset_map, set(), set())
+        deleted_count = self.sync_manager._phase3_reconcile_deletions(asset_map, set(), set())
 
-        assert self.sync_manager._deleted_count == 0
+        assert deleted_count == 0
         assert db.get_deleted_asset_count() == 0
 
 
@@ -354,7 +373,7 @@ class TestDeletionDatabase:
 
     def test_mark_asset_deleted_tombstones_and_removes_children(self) -> None:
         self._seed_asset("a1")
-        self.db.upsert_sync_status(SyncStatus(asset_id="a1", version_type="original", sync_status="completed"))
+        self.db.upsert_sync_status(SyncStatus(asset_id="a1", version_type="original", sync_status=SyncState.COMPLETED))
         self.db.upsert_local_file(LocalFileRecord(
             asset_id="a1", version_type="original", local_filename="a1.jpg",
             file_path="_data/a1.jpg", file_size=100, download_date="2024-01-01",

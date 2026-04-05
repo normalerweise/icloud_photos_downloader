@@ -392,8 +392,30 @@ def _process_all_users_new_arch(
             return 1
 
         base_dir = Path(user_config.directory)
+
+        from icloudpd.new_download.database import PhotoDatabase
+        from icloudpd.new_download.download_manager import DownloadManager
+        from icloudpd.new_download.file_manager import FileManager
+        from icloudpd.new_download.filesystem_sync import FilesystemSync
+        from icloudpd.new_download.photo_asset_record_mapper import PhotoAssetRecordMapper
+        from icloudpd.new_download.progress_reporter import TerminalProgressReporter
+
+        database = PhotoDatabase(base_dir)
+        file_manager = FileManager(base_dir)
+        mapper = PhotoAssetRecordMapper()
+        download_manager = DownloadManager(file_manager, icloud.photos.session, mapper)
+        filesystem_sync = FilesystemSync(base_dir, database)
+        progress_reporter = TerminalProgressReporter()
+
         sync_manager = SyncManager(
-            base_dir, icloud.photos.session, photo_library=icloud.photos
+            base_dir,
+            database,
+            file_manager,
+            mapper,
+            download_manager,
+            filesystem_sync,
+            progress_reporter,
+            photo_library=icloud.photos,
         )
 
         # Select filter strategy
