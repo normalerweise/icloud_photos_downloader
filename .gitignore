@@ -27,4 +27,5 @@ node_modules/
 .cookies/
 
 .claude/
+.hypothesis/
 test_library
