@@ -9,6 +9,7 @@ import os
 import sys
 from functools import partial
 from pathlib import Path
+from threading import Thread
 from typing import Callable, Dict, Sequence, Tuple
 
 from icloudpd.authentication import authenticator
@@ -20,7 +21,9 @@ from icloudpd.base import (
     update_password_status_in_webui,
 )
 from icloudpd.log_level import LogLevel
+from icloudpd.mfa_provider import MFAProvider
 from icloudpd.password_provider import PasswordProvider
+from icloudpd.server import serve_app
 from icloudpd.status import StatusExchange
 from icloudpd.sync.config import SyncGlobalConfig, SyncUserConfig
 from icloudpd.sync.database import PhotoDatabase
@@ -28,7 +31,7 @@ from icloudpd.sync.download_manager import DownloadManager
 from icloudpd.sync.file_manager import FileManager
 from icloudpd.sync.filesystem_sync import FilesystemSync
 from icloudpd.sync.photo_asset_record_mapper import PhotoAssetRecordMapper
-from icloudpd.sync.progress_reporter import TerminalProgressReporter
+from icloudpd.sync.progress_reporter import TerminalProgressReporter, WebUIProgressReporter
 from icloudpd.sync.sync_manager import SyncManager
 from icloudpd.sync.sync_strategy import (
     NoOpStrategy,
@@ -88,15 +91,24 @@ def build_password_providers(
     return result
 
 
-def run_sync(
+def _needs_web_server(global_config: SyncGlobalConfig) -> bool:
+    return (
+        global_config.mfa_provider == MFAProvider.WEBUI
+        or PasswordProvider.WEBUI in global_config.password_providers
+    )
+
+
+def _sync_all_users(
     global_config: SyncGlobalConfig,
     user_configs: Sequence[SyncUserConfig],
+    logger: logging.Logger,
+    status_exchange: StatusExchange,
+    use_web_server: bool,
 ) -> int:
-    logger = create_logger(global_config.log_level)
-    status_exchange = StatusExchange()
-
+    """Run one sync pass for all users. Returns 0 on success, 1 on auth failure."""
     for user_config in user_configs:
         logger.info(f"Processing user: {user_config.username}")
+        status_exchange.set_current_user(user_config.username)
 
         password_providers = build_password_providers(
             global_config.password_providers,
@@ -133,7 +145,11 @@ def run_sync(
         mapper = PhotoAssetRecordMapper()
         download_manager = DownloadManager(file_manager, icloud.photos.session, mapper)
         filesystem_sync = FilesystemSync(base_dir, database)
-        progress_reporter = TerminalProgressReporter()
+        progress_reporter = (
+            WebUIProgressReporter(status_exchange.get_progress())
+            if use_web_server
+            else TerminalProgressReporter()
+        )
 
         sync_manager = SyncManager(
             base_dir,
@@ -159,4 +175,58 @@ def run_sync(
         logger.info("Sync complete.")
         print(json.dumps(stats, indent=2))
 
+    status_exchange.clear_current_user()
     return 0
+
+
+def run_sync(
+    global_config: SyncGlobalConfig,
+    user_configs: Sequence[SyncUserConfig],
+) -> int:
+    logger = create_logger(global_config.log_level)
+    status_exchange = StatusExchange()
+
+    status_exchange.set_global_config(global_config)
+    status_exchange.set_user_configs(user_configs)
+
+    use_web_server = _needs_web_server(global_config)
+
+    if use_web_server:
+        logger.info("Starting web server for WebUI authentication...")
+        server_thread = Thread(
+            target=serve_app, daemon=True, args=[logger, status_exchange]
+        )
+        server_thread.start()
+
+    if not global_config.watch_with_interval:
+        return _sync_all_users(
+            global_config, user_configs, logger, status_exchange, use_web_server
+        )
+
+    # Watch mode: sync repeatedly with interval
+    import time
+
+    logger.info(
+        f"Running in watch mode with interval {global_config.watch_with_interval}s"
+    )
+    while True:
+        result = _sync_all_users(
+            global_config, user_configs, logger, status_exchange, use_web_server
+        )
+        if result != 0:
+            logger.warning(f"Sync iteration failed with code {result}, will retry next cycle")
+
+        progress = status_exchange.get_progress()
+        wait = global_config.watch_with_interval
+        logger.info(f"Waiting {wait} seconds before next sync...")
+        for i in range(1, wait):
+            progress.waiting = wait - i
+            if progress.resume:
+                logger.info("Resume requested, starting next sync early")
+                progress.reset()
+                break
+            if progress.cancel:
+                logger.info("Cancel requested, shutting down")
+                return 0
+            time.sleep(1)
+        progress.waiting = 0

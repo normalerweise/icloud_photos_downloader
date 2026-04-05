@@ -1,8 +1,7 @@
 from enum import Enum
 from threading import Lock
-from typing import Sequence
+from typing import Any, Sequence
 
-from icloudpd.config import GlobalConfig, UserConfig
 from icloudpd.progress import Progress
 
 
@@ -25,8 +24,8 @@ class StatusExchange:
         self._status = Status.NO_INPUT_NEEDED
         self._payload: str | None = None
         self._error: str | None = None
-        self._global_config: GlobalConfig | None = None
-        self._user_configs: Sequence[UserConfig] = []
+        self._global_config: Any | None = None
+        self._user_configs: Sequence[Any] = []
         self._current_user: str | None = None
         self._progress = Progress()
 
@@ -94,19 +93,19 @@ class StatusExchange:
         with self.lock:
             return self._progress
 
-    def set_global_config(self, global_config: GlobalConfig) -> None:
+    def set_global_config(self, global_config: Any) -> None:
         with self.lock:
             self._global_config = global_config
 
-    def get_global_config(self) -> GlobalConfig | None:
+    def get_global_config(self) -> Any | None:
         with self.lock:
             return self._global_config
 
-    def set_user_configs(self, user_configs: Sequence[UserConfig]) -> None:
+    def set_user_configs(self, user_configs: Sequence[Any]) -> None:
         with self.lock:
             self._user_configs = user_configs
 
-    def get_user_configs(self) -> Sequence[UserConfig]:
+    def get_user_configs(self) -> Sequence[Any]:
         with self.lock:
             return self._user_configs
 

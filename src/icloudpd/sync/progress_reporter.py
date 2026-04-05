@@ -142,6 +142,27 @@ class TerminalProgressReporter(ProgressReporter):
             print()
 
 
+class WebUIProgressReporter(ProgressReporter):
+    """Bridges ProgressReporter to the web UI's Progress object."""
+
+    def __init__(self, progress: Any) -> None:
+        self.progress = progress
+
+    def phase_start(self, phase_name: str, total_items: int) -> None:
+        self.progress.photos_count = total_items
+        self.progress.photos_counter = 0
+        self.progress.photos_last_message = f"Starting {phase_name}"
+
+    def phase_progress(self, current: int, total: int, **kwargs: Any) -> None:
+        self.progress.photos_counter = current
+
+    def phase_complete(self, phase_name: str, stats: Dict[str, Any]) -> None:
+        self.progress.photos_last_message = f"Completed {phase_name}"
+
+    def sync_complete(self, final_stats: Dict[str, Any]) -> None:
+        self.progress.photos_last_message = "Sync complete"
+
+
 class LoggingProgressReporter(ProgressReporter):
     """Simple logging-based progress reporter for non-interactive environments."""
 
