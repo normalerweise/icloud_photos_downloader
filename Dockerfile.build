@@ -71,8 +71,10 @@ RUN \
     echo "Building binaries..." && \
     scripts/build_bin1 icloudpd  && \
     scripts/build_bin1 icloud && \
+    scripts/build_bin1 icloudpd_sync && \
     scripts/build_static icloudpd && \
     scripts/build_static icloud && \
+    scripts/build_static icloudpd_sync && \
     scripts/build_whl
 
 FROM scratch
