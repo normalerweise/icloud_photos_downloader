@@ -23,6 +23,12 @@
                     new bootstrap.Collapse(el.getAttribute('data-bs-target'), {toggle: false});
                 }
             });
+
+            // Auto-scroll log panel to bottom
+            const logPanel = document.getElementById('log-panel');
+            if (logPanel) {
+                logPanel.scrollTop = logPanel.scrollHeight;
+            }
         });
     </script>
     <nav class="navbar bg-body-tertiary">

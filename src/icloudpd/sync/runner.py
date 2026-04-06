@@ -13,6 +13,7 @@ from threading import Thread
 from typing import Callable, Dict, Sequence, Tuple
 
 from icloudpd.authentication import authenticator
+from icloudpd.log_handler import WebUILogHandler
 from icloudpd.base import (
     ask_password_in_console,
     dummy_password_writter,
@@ -192,6 +193,10 @@ def run_sync(
     use_web_server = _needs_web_server(global_config)
 
     if use_web_server:
+        web_log_handler = WebUILogHandler(status_exchange.get_log_buffer())
+        web_log_handler.setLevel(logger.level)
+        logger.addHandler(web_log_handler)
+
         logger.info("Starting web server for WebUI authentication...")
         server_thread = Thread(
             target=serve_app, daemon=True, args=[logger, status_exchange]

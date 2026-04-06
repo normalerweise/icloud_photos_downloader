@@ -57,6 +57,35 @@
                 </div>
             </div>
         </div>
+        {% if log_entries %}
+        <div class="row mb-3">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header text-bg-secondary">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span>Sync Log</span>
+                            <span class="badge bg-dark">{{ log_entries|length }} entries</span>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div id="log-panel" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;">
+                            <table class="table table-sm table-striped mb-0">
+                                <tbody>
+                                {% for entry in log_entries %}
+                                    <tr>
+                                        <td class="text-nowrap text-muted" style="width: 160px;">{{ entry.timestamp }}</td>
+                                        <td class="text-nowrap {% if entry.level == 'ERROR' %}text-danger{% elif entry.level == 'WARNING' %}text-warning{% elif entry.level == 'DEBUG' %}text-info{% endif %}" style="width: 70px;">{{ entry.level }}</td>
+                                        <td>{{ entry.message }}</td>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         <div class="row">
             {% if global_config %}
             <div class="col-sm-12 col-xxl-6 mb-3">

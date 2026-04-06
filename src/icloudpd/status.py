@@ -2,6 +2,7 @@ from enum import Enum
 from threading import Lock
 from typing import Any, Sequence
 
+from icloudpd.log_buffer import LogBuffer
 from icloudpd.progress import Progress
 
 
@@ -36,6 +37,7 @@ class StatusExchange:
         self._user_configs: Sequence[Any] = []
         self._current_user: str | None = None
         self._progress = Progress()
+        self._log_buffer = LogBuffer()
         self._trusted_devices: Sequence[TrustedDeviceInfo] = []
         self._sms_request_device_id: int | None = None
         self._sms_sent_device_id: int | None = None
@@ -103,6 +105,10 @@ class StatusExchange:
     def get_progress(self) -> Progress:
         with self.lock:
             return self._progress
+
+    def get_log_buffer(self) -> LogBuffer:
+        with self.lock:
+            return self._log_buffer
 
     def set_global_config(self, global_config: Any) -> None:
         with self.lock:

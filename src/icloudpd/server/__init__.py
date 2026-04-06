@@ -31,6 +31,7 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
         _error = _status_exchange.get_error()
 
         if _status == Status.NO_INPUT_NEEDED:
+            _log_entries = _status_exchange.get_log_buffer().get_all()
             return render_template(
                 "no_input.html",
                 status=_status,
@@ -39,6 +40,7 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
                 global_config=vars(_global_config) if _global_config else None,
                 user_configs=[vars(uc) for uc in _user_configs] if _user_configs else [],
                 current_user=_current_user,
+                log_entries=_log_entries,
             )
         if _status == Status.NEED_MFA:
             _trusted_devices = _status_exchange.get_trusted_devices()
