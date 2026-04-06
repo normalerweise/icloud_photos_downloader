@@ -54,92 +54,73 @@ class ProgressReporter(ABC):
 
 
 class TerminalProgressReporter(ProgressReporter):
-    """Terminal-based progress reporter with beautiful progress bars."""
+    """Terminal-based progress reporter with progress bars (TTY) or log lines (container)."""
 
-    def __init__(self):
-        """Initialize terminal progress reporter."""
+    def __init__(self) -> None:
         self.current_phase: str | None = None
         self.total_items: int = 0
         self.current_item: int = 0
         self.phase_start_time: float | None = None
-        self.last_update_time: float | None = None
+        self._is_tty: bool = sys.stdout.isatty()
 
     def phase_start(self, phase_name: str, total_items: int) -> None:
-        """Start a new phase with progress bar."""
         self.current_phase = phase_name
         self.total_items = total_items
         self.current_item = 0
         self.phase_start_time = time.time()
-        self.last_update_time = time.time()
 
-        print(f"\n{phase_name}")
-        self._print_progress_bar(0, total_items)
+        logger.info(f"{phase_name} ({total_items} items)")
+        if self._is_tty:
+            self._write_progress_bar(0, total_items)
 
     def phase_progress(self, current: int, total: int, **kwargs: Any) -> None:
-        """Update progress within current phase."""
         self.current_item = current
-        
-        # Calculate speed and ETA
-        current_time = time.time()
+
         speed_info = ""
         if self.phase_start_time and current > 0:
-            elapsed = current_time - self.phase_start_time
+            elapsed = time.time() - self.phase_start_time
             if elapsed > 0:
-                speed = current / elapsed * 60  # items per minute
-                eta_seconds = (total - current) / (current / elapsed) if current > 0 else 0
+                speed = current / elapsed * 60
+                eta_seconds = (total - current) / (current / elapsed)
                 eta_minutes = int(eta_seconds / 60)
                 speed_info = f" (speed: {speed:.1f} assets/min; ETA: {eta_minutes} min)"
 
-        # Update progress bar
-        self._print_progress_bar(current, total, speed_info)
-        self.last_update_time = current_time
+        if self._is_tty:
+            self._write_progress_bar(current, total, speed_info)
 
     def phase_complete(self, phase_name: str, stats: Dict[str, Any]) -> None:
-        """Complete the current phase."""
         if self.current_phase == phase_name:
-            # Print final progress bar at 100%
-            self._print_progress_bar(self.total_items, self.total_items)
-            
-            # Print phase completion message
+            if self._is_tty:
+                self._write_progress_bar(self.total_items, self.total_items)
             if "processed" in stats:
-                print(f"\n{phase_name} completed: {stats['processed']} assets processed")
+                logger.info(f"{phase_name} completed: {stats['processed']} assets processed")
             if "to_download" in stats:
-                print(f"{phase_name} completed: {stats['to_download']} assets to download")
+                logger.info(f"{phase_name} completed: {stats['to_download']} assets to download")
 
     def sync_complete(self, final_stats: Dict[str, Any]) -> None:
-        """Complete the entire sync process."""
-        print("\n" + "="*50)
-        print("SYNC COMPLETED")
-        print("="*50)
-        print(f"Total assets: {final_stats.get('total_assets', 0)}")
-        print(f"Downloaded assets: {final_stats.get('downloaded_assets', 0)}")
-        print(f"Failed assets: {final_stats.get('failed_assets', 0)}")
+        lines = [
+            f"Total assets: {final_stats.get('total_assets', 0)}",
+            f"Downloaded assets: {final_stats.get('downloaded_assets', 0)}",
+            f"Failed assets: {final_stats.get('failed_assets', 0)}",
+        ]
         deleted = final_stats.get('deleted_assets', 0)
         if deleted > 0:
-            print(f"Deleted (mirrored from iCloud): {deleted}")
-
+            lines.append(f"Deleted (mirrored from iCloud): {deleted}")
         if 'disk_usage_gb' in final_stats:
-            print(f"Disk usage: {final_stats['disk_usage_gb']:.2f} GB")
-        print("="*50)
+            lines.append(f"Disk usage: {final_stats['disk_usage_gb']:.2f} GB")
+        logger.info("SYNC COMPLETED — " + ", ".join(lines))
 
-    def _print_progress_bar(self, current: int, total: int, additional_info: str = "") -> None:
-        """Print a beautiful progress bar to terminal."""
+    def _write_progress_bar(self, current: int, total: int, additional_info: str = "") -> None:
         if total == 0:
             return
-
         percentage = (current / total) * 100
         bar_length = 40
         filled_length = int(bar_length * current // total)
-        
         bar = "█" * filled_length + "░" * (bar_length - filled_length)
-        
-        # Clear line and print progress
         sys.stdout.write(f"\r{bar} {percentage:5.1f}% ({current}/{total}){additional_info}")
         sys.stdout.flush()
-        
-        # If complete, add newline
         if current >= total:
-            print()
+            sys.stdout.write("\n")
 
 
 class WebUIProgressReporter(ProgressReporter):

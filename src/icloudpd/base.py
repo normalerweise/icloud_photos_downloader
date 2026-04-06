@@ -43,7 +43,7 @@ from icloudpd.authentication import authenticator
 from icloudpd.autodelete import autodelete_photos
 from icloudpd.config import GlobalConfig, UserConfig
 from icloudpd.counter import Counter
-from icloudpd.email_notifications import send_2sa_notification
+from icloudpd.email_notifications import send_2sa_notification, send_notification
 from icloudpd.filename_policies import build_filename_with_policies, create_filename_builder
 from icloudpd.log_level import LogLevel
 from icloudpd.mfa_provider import MFAProvider
@@ -494,6 +494,41 @@ def notificator_builder(
             pass
     except Exception as error:
         logger.error("Notification of the required MFA failed")
+        logger.debug(error)
+
+
+def generic_notification_builder(
+    logger: logging.Logger,
+    smtp_username: str | None,
+    smtp_password: str | None,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_no_tls: bool,
+    notification_email: str | None,
+    notification_email_from: str | None,
+    notification_script: str | None,
+    subject: str,
+    body: str,
+) -> None:
+    try:
+        if notification_script is not None:
+            logger.debug("Executing notification script...")
+            subprocess.call([notification_script])
+        if smtp_username is not None or notification_email is not None:
+            send_notification(
+                logger,
+                smtp_username,
+                smtp_password,
+                smtp_host,
+                smtp_port,
+                smtp_no_tls,
+                notification_email,
+                notification_email_from,
+                subject,
+                body,
+            )
+    except Exception as error:
+        logger.error(f"Failed to send notification: {subject}")
         logger.debug(error)
 
 

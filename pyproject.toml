@@ -27,7 +27,7 @@ dependencies = [
     "schema==0.7.7",
     "tqdm==4.67.1",
     "piexif==1.1.3",
-    "urllib3==1.26.20",
+    "urllib3==2.6.3",
     "typing_extensions==4.14.0",
     "Flask==3.1.1",
     "waitress==3.0.2",
@@ -73,7 +73,6 @@ test = [
     "types-pytz==2025.2.0.20250516",
     "types-tzlocal==5.1.0.1",
     "types-requests==2.31.0.2",
-    "types-urllib3==1.26.25.14",
     "types-tqdm==4.67.0.20250516",
     "types-mock==5.2.0.20250516",
     "types-waitress==3.0.1.20241117",
@@ -89,6 +88,7 @@ icloud = "pyicloud_ipd.cmdline:main"
 
 [tool.uv]
 default-groups = ["dev", "test"]
+environments = ["platform_python_implementation == 'CPython'"]
 
 [tool.pytest.ini_options]
 log_format = "%(levelname)-8s %(message)s"

@@ -1,15 +1,20 @@
 import os
 import sys
 from logging import Logger
+from threading import Event
 
 import waitress
-from flask import Flask, Response, make_response, render_template, request
+from flask import Flask, Response, jsonify, make_response, render_template, request
 
 from icloudpd.status import Status, StatusExchange
 from icloudpd.sync.schedule import SyncRunKind
 
 
-def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
+def serve_app(
+    logger: Logger,
+    _status_exchange: StatusExchange,
+    ready_event: Event | None = None,
+) -> None:
     app = Flask(__name__)
     app.logger = logger
     # for running in pyinstaller
@@ -134,5 +139,12 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
         _status_exchange.get_progress().cancel = True
         return make_response("Ok", 200)
 
+    @app.route("/health")
+    def health() -> Response:
+        return jsonify({"status": "ok"})
+
     logger.debug("Starting web server...")
-    return waitress.serve(app)
+    server = waitress.create_server(app)  # type: ignore[attr-defined]
+    if ready_event is not None:
+        ready_event.set()
+    server.run()

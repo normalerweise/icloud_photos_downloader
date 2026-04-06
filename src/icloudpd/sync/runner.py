@@ -6,17 +6,19 @@ import datetime
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from functools import partial
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from typing import Any, Callable, Dict, Sequence, Tuple
 
 from icloudpd.authentication import authenticator
 from icloudpd.base import (
     ask_password_in_console,
     dummy_password_writter,
+    generic_notification_builder,
     get_password_from_webui,
     keyring_password_writter,
     notificator_builder,
@@ -130,6 +132,27 @@ def build_notificator(
     )
 
 
+def build_generic_notificator(
+    logger: logging.Logger,
+    notification: NotificationConfig | None,
+) -> Callable[[str, str], None]:
+    """Build a notificator that accepts subject and body."""
+    if notification is None:
+        return lambda subject, body: None
+    return partial(
+        generic_notification_builder,
+        logger,
+        notification.smtp_username,
+        notification.smtp_password,
+        notification.smtp_host,
+        notification.smtp_port,
+        notification.smtp_no_tls,
+        notification.notification_email,
+        notification.notification_email_from,
+        str(notification.notification_script) if notification.notification_script else None,
+    )
+
+
 def _needs_web_server(global_config: SyncGlobalConfig) -> bool:
     return (
         global_config.mfa_provider == MFAProvider.WEBUI
@@ -209,33 +232,36 @@ def _sync_single_user(
     base_dir = Path(user_config.directory)
 
     database = PhotoDatabase(base_dir)
-    file_manager = FileManager(base_dir)
-    mapper = PhotoAssetRecordMapper()
-    download_manager = DownloadManager(file_manager, icloud.photos.session, mapper)
-    filesystem_sync = FilesystemSync(base_dir, database)
-    progress_reporter = (
-        WebUIProgressReporter(status_exchange.get_progress())
-        if use_web_server
-        else TerminalProgressReporter()
-    )
+    try:
+        file_manager = FileManager(base_dir)
+        mapper = PhotoAssetRecordMapper()
+        download_manager = DownloadManager(file_manager, icloud.photos.session, mapper)
+        filesystem_sync = FilesystemSync(base_dir, database)
+        progress_reporter = (
+            WebUIProgressReporter(status_exchange.get_progress())
+            if use_web_server
+            else TerminalProgressReporter()
+        )
 
-    sync_manager = SyncManager(
-        base_dir,
-        database,
-        file_manager,
-        mapper,
-        download_manager,
-        filesystem_sync,
-        progress_reporter,
-        photo_library=icloud.photos,
-    )
+        sync_manager = SyncManager(
+            base_dir,
+            database,
+            file_manager,
+            mapper,
+            download_manager,
+            filesystem_sync,
+            progress_reporter,
+            photo_library=icloud.photos,
+        )
 
-    photos_to_sync = strategy_factory(icloud.photos)
+        photos_to_sync = strategy_factory(icloud.photos)
 
-    stats = sync_manager.sync_photos(photos_to_sync)
-    logger.info("Sync complete.")
-    print(json.dumps(stats, indent=2))
-    return 0
+        stats = sync_manager.sync_photos(photos_to_sync)
+        logger.info("Sync complete.")
+        print(json.dumps(stats, indent=2))
+        return 0
+    finally:
+        database.close()
 
 
 def _sync_all_users(
@@ -305,59 +331,78 @@ def _run_scheduled(
 
     progress = status_exchange.get_progress()
 
+    def _shutdown_handler(signum: int, _frame: Any) -> None:
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name}, requesting graceful shutdown")
+        progress.cancel = True
+
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
+
+    crash_notificator = build_generic_notificator(logger, global_config.notification)
+
     while True:
-        scheduler.run_pending()
+        try:
+            scheduler.run_pending()
 
-        # Process manually triggered runs from the web UI
-        for username, kind in status_exchange.drain_manual_triggers():
-            if username in user_config_by_name:
-                logger.info(f"Manual {kind.value} sync triggered for {username}")
-                pending_runs.append(
-                    (user_schedule_by_name[username], kind)
+            # Process manually triggered runs from the web UI
+            for username, kind in status_exchange.drain_manual_triggers():
+                if username in user_config_by_name:
+                    logger.info(f"Manual {kind.value} sync triggered for {username}")
+                    pending_runs.append(
+                        (user_schedule_by_name[username], kind)
+                    )
+
+            for user_schedule, kind in pending_runs:
+                user_config = user_config_by_name[user_schedule.username]
+                logger.info(f"Starting {kind.value} sync for {user_schedule.username}")
+                result = _sync_single_user(
+                    global_config,
+                    user_config,
+                    partial(_strategy_for_run_kind, kind, schedule_config.daily_lookback_days),
+                    logger,
+                    status_exchange,
+                    use_web_server,
                 )
+                if result != 0:
+                    logger.warning(
+                        f"{kind.value} sync failed for {user_schedule.username} "
+                        f"with code {result}, will retry next cycle"
+                    )
+                status_exchange.clear_current_user()
+            pending_runs.clear()
 
-        for user_schedule, kind in pending_runs:
-            user_config = user_config_by_name[user_schedule.username]
-            logger.info(f"Starting {kind.value} sync for {user_schedule.username}")
-            result = _sync_single_user(
-                global_config,
-                user_config,
-                partial(_strategy_for_run_kind, kind, schedule_config.daily_lookback_days),
-                logger,
-                status_exchange,
-                use_web_server,
+            # Update schedule info after processing runs
+            now = datetime.datetime.now(tz=datetime.timezone.utc)
+            status_exchange.set_schedule_info(
+                build_schedule_info(now, user_schedules, schedule_config)
             )
-            if result != 0:
-                logger.warning(
-                    f"{kind.value} sync failed for {user_schedule.username} "
-                    f"with code {result}, will retry next cycle"
-                )
-            status_exchange.clear_current_user()
-        pending_runs.clear()
 
-        # Update schedule info after processing runs
-        now = datetime.datetime.now(tz=datetime.timezone.utc)
-        status_exchange.set_schedule_info(
-            build_schedule_info(now, user_schedules, schedule_config)
-        )
-
-        # Show real time until next run in the UI, sleep in short chunks
-        idle = scheduler.idle_seconds
-        total_wait = max(int(idle if idle is not None else 60), 1)
-        progress.waiting = total_wait
-        elapsed = 0
-        while elapsed < total_wait:
-            if progress.cancel:
-                logger.info("Cancel requested, shutting down")
-                return 0
-            if progress.resume:
-                logger.info("Resume requested, starting next sync early")
-                progress.reset()
-                break
-            time.sleep(1)
-            elapsed += 1
-            progress.waiting = max(total_wait - elapsed, 0)
-        progress.waiting = 0
+            # Show real time until next run in the UI, sleep in short chunks
+            idle = scheduler.idle_seconds
+            total_wait = max(int(idle if idle is not None else 60), 1)
+            progress.waiting = total_wait
+            elapsed = 0
+            while elapsed < total_wait:
+                if progress.cancel:
+                    logger.info("Cancel requested, shutting down")
+                    return 0
+                if progress.resume:
+                    logger.info("Resume requested, starting next sync early")
+                    progress.reset()
+                    break
+                time.sleep(1)
+                elapsed += 1
+                progress.waiting = max(total_wait - elapsed, 0)
+            progress.waiting = 0
+        except Exception:
+            logger.exception("Unexpected error in sync loop, will retry in 60s")
+            crash_notificator(
+                "icloudpd-sync: Unexpected error in sync loop",
+                "The icloudpd-sync scheduled sync loop encountered an unexpected error. "
+                "The loop will retry in 60 seconds. Check the logs for details.",
+            )
+            time.sleep(60)
 
 
 def _register_jobs(
@@ -423,10 +468,15 @@ def run_sync(
         logger.addHandler(web_log_handler)
 
         logger.info("Starting web server for WebUI authentication...")
+        server_ready = Event()
         server_thread = Thread(
-            target=serve_app, daemon=True, args=[logger, status_exchange]
+            target=serve_app, daemon=True, args=[logger, status_exchange, server_ready]
         )
         server_thread.start()
+        if not server_ready.wait(timeout=5):
+            logger.error("Web server failed to start within 5 seconds")
+            return 1
+        logger.info("Web server started successfully")
 
     if not global_config.schedule:
         return _sync_all_users(
