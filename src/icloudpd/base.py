@@ -846,33 +846,42 @@ def delete_photo(
     photo: PhotoAsset,
     filename_builder: Callable[[PhotoAsset], str],
 ) -> None:
-    """Delete a photo from the iCloud account."""
+    """Delete a photo from the iCloud account.
+
+    DISABLED: icloudpd is used as a backup tool — deleting photos from iCloud
+    is never intended. The original implementation sent a POST to
+    records/modify with isDeleted=1, which permanently removed the asset
+    from the iCloud library. Kept as a no-op so callers don't break.
+    """
     clean_filename_local = filename_builder(photo)
-    logger.debug("Deleting %s in iCloud...", clean_filename_local)
-    url = (
-        f"{library_object.service_endpoint}/records/modify?"
-        f"{urllib.parse.urlencode(library_object.params)}"
+    logger.warning(
+        "delete_photo called for %s but iCloud deletion is disabled (backup-only mode)",
+        clean_filename_local,
     )
-    post_data = json.dumps(
-        {
-            "atomic": True,
-            "desiredKeys": ["isDeleted"],
-            "operations": [
-                {
-                    "operationType": "update",
-                    "record": {
-                        "fields": {"isDeleted": {"value": 1}},
-                        "recordChangeTag": photo._asset_record["recordChangeTag"],
-                        "recordName": photo._asset_record["recordName"],
-                        "recordType": "CPLAsset",
-                    },
-                }
-            ],
-            "zoneID": library_object.zone_id,
-        }
-    )
-    library_object.session.post(url, data=post_data, headers={"Content-type": "application/json"})
-    logger.info("Deleted %s in iCloud", clean_filename_local)
+    # url = (
+    #     f"{library_object.service_endpoint}/records/modify?"
+    #     f"{urllib.parse.urlencode(library_object.params)}"
+    # )
+    # post_data = json.dumps(
+    #     {
+    #         "atomic": True,
+    #         "desiredKeys": ["isDeleted"],
+    #         "operations": [
+    #             {
+    #                 "operationType": "update",
+    #                 "record": {
+    #                     "fields": {"isDeleted": {"value": 1}},
+    #                     "recordChangeTag": photo._asset_record["recordChangeTag"],
+    #                     "recordName": photo._asset_record["recordName"],
+    #                     "recordType": "CPLAsset",
+    #                 },
+    #             }
+    #         ],
+    #         "zoneID": library_object.zone_id,
+    #     }
+    # )
+    # library_object.session.post(url, data=post_data, headers={"Content-type": "application/json"})
+    # logger.info("Deleted %s in iCloud", clean_filename_local)
 
 
 def delete_photo_dry_run(
@@ -881,13 +890,20 @@ def delete_photo_dry_run(
     photo: PhotoAsset,
     filename_builder: Callable[[PhotoAsset], str],
 ) -> None:
-    """Dry run for deleting a photo from the iCloud"""
+    """Dry run for deleting a photo from the iCloud.
+
+    DISABLED: see delete_photo — iCloud deletion is disabled in backup-only mode.
+    """
     filename = filename_builder(photo)
-    logger.info(
-        "[DRY RUN] Would delete %s in iCloud library %s",
+    logger.warning(
+        "delete_photo_dry_run called for %s but iCloud deletion is disabled (backup-only mode)",
         filename,
-        library_object.zone_id["zoneName"],
     )
+    # logger.info(
+    #     "[DRY RUN] Would delete %s in iCloud library %s",
+    #     filename,
+    #     library_object.zone_id["zoneName"],
+    # )
 
 
 def dump_responses(dumper: Callable[[Any], None], responses: List[Mapping[str, Any]]) -> None:
