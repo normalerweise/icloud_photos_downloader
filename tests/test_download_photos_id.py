@@ -552,7 +552,7 @@ class DownloadPhotoNameIDTestCase(TestCase):
         def mock_raise_response_error() -> None:
             raise PyiCloudAPIResponseException("Api Error", "100")
 
-        with mock.patch.object(PhotoLibrary, "_fetch_folders") as pa_photos_request:
+        with mock.patch.object(PhotoLibrary, "_fetch_album_records") as pa_photos_request:
             pa_photos_request.side_effect = mock_raise_response_error
 
             # Let the initial authenticate() call succeed,
@@ -1375,7 +1375,7 @@ class DownloadPhotoNameIDTestCase(TestCase):
                     f"Downloading the first original photo to {data_dir} ...",
                     result.output,
                 )
-                self.assertIn("Deleted IMG_7409_QVk2Yyt.JPG in iCloud", result.output)
+                self.assertIn("delete_photo called for IMG_7409_QVk2Yyt.JPG but iCloud deletion is disabled (backup-only mode)", result.output)
                 self.assertIn("All photos have been downloaded", result.output)
                 # TODO assert cass.all_played
                 assert result.exit_code == 0
@@ -1781,7 +1781,7 @@ class DownloadPhotoNameIDTestCase(TestCase):
                         result.output,
                     )
                     self.assertIn(
-                        "[DRY RUN] Would delete IMG_7409_QVk2Yyt.JPG in iCloud",
+                        "delete_photo_dry_run called for IMG_7409_QVk2Yyt.JPG but iCloud deletion is disabled (backup-only mode)",
                         result.output,
                     )
                     self.assertIn("All photos have been downloaded", result.output)

@@ -142,7 +142,7 @@ class KeepICloudModeTestCases(TestCase):
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7409.JPG in iCloud",
+                "delete_photo called for IMG_7409.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn("All photos have been downloaded", result.output)
@@ -234,15 +234,15 @@ class KeepICloudModeTestCases(TestCase):
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7409.JPG in iCloud",
+                "delete_photo called for IMG_7409.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7408.JPG in iCloud",
+                "delete_photo called for IMG_7408.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7407.JPG in iCloud",
+                "delete_photo called for IMG_7407.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn("All photos have been downloaded", result.output)
@@ -290,15 +290,15 @@ class KeepICloudModeTestCases(TestCase):
                 result.output,
             )
             self.assertNotIn(
-                "Deleted IMG_7409.JPG in iCloud",
+                "delete_photo called for IMG_7409.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7408.JPG in iCloud",
+                "delete_photo called for IMG_7408.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7407.JPG in iCloud",
+                "delete_photo called for IMG_7407.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn("All photos have been downloaded", result.output)
@@ -344,7 +344,7 @@ class KeepICloudModeTestCases(TestCase):
                 result.output,
             )
             self.assertIn(
-                "[DRY RUN] Would delete IMG_7409.JPG in iCloud library PrimarySync",
+                "delete_photo_dry_run called for IMG_7409.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn("All photos have been downloaded", result.output)
@@ -392,19 +392,19 @@ class KeepICloudModeTestCases(TestCase):
                 result.output,
             )
             self.assertNotIn(
-                "Deleted IMG_7409.JPG in iCloud",
+                "delete_photo called for IMG_7409.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7408.JPG in iCloud",
+                "delete_photo called for IMG_7408.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_7407.JPG in iCloud",
+                "delete_photo called for IMG_7407.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertNotIn(
-                "Deleted IMG_7405.MOV in iCloud",
+                "delete_photo called for IMG_7405.MOV but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn("All photos have been downloaded", result.output)

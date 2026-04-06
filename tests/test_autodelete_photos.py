@@ -89,7 +89,7 @@ class AutodeletePhotosTestCase(TestCase):
                 result.output,
             )
             self.assertIn(
-                "Deleted IMG_3589.JPG",
+                "delete_photo called for IMG_3589.JPG but iCloud deletion is disabled (backup-only mode)",
                 result.output,
             )
             self.assertIn("All photos and videos have been downloaded", result.output)
@@ -187,7 +187,7 @@ class AutodeletePhotosTestCase(TestCase):
             result.output,
         )
         self.assertIn(
-            "Deleted IMG_3589.JPG",
+            "delete_photo called for IMG_3589.JPG but iCloud deletion is disabled (backup-only mode)",
             result.output,
         )
         self.assertIn("All photos and videos have been downloaded", result.output)
