@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime
+import pathlib
 import sys
+from pathlib import Path
 from typing import Sequence, Tuple
 
 from tzlocal import get_localzone
@@ -17,7 +19,13 @@ from icloudpd.log_level import LogLevel
 from icloudpd.mfa_provider import MFAProvider
 from icloudpd.password_provider import PasswordProvider
 from icloudpd.string_helpers import parse_timestamp_or_timedelta
-from icloudpd.sync.config import ScheduleConfig, SyncGlobalConfig, SyncUserConfig
+from icloudpd.sync.config import (
+    NotificationConfig,
+    ScheduleConfig,
+    SyncGlobalConfig,
+    SyncUserConfig,
+)
+from icloudpd.sync.config_file import load_config, read_config_file
 
 
 def _ensure_tzinfo(tz: datetime.tzinfo, dt: datetime.datetime) -> datetime.datetime:
@@ -54,6 +62,11 @@ def _add_global_options(parser: argparse.ArgumentParser) -> argparse.ArgumentPar
     cloned = copy.deepcopy(parser)
     cloned.add_argument("--help", "-h", action="store_true", default=False)
     cloned.add_argument("--version", action="store_true", default=False)
+    cloned.add_argument(
+        "--config",
+        help="Path to YAML config file",
+        default=None,
+    )
     cloned.add_argument(
         "--log-level",
         help="Log level (default: %(default)s)",
@@ -113,6 +126,48 @@ def _add_global_options(parser: argparse.ArgumentParser) -> argparse.ArgumentPar
         type=int,
         default=2,
     )
+    cloned.add_argument(
+        "--smtp-username",
+        help="SMTP username for email notifications when authentication expires",
+        default=None,
+    )
+    cloned.add_argument(
+        "--smtp-password",
+        help="SMTP password for email notifications",
+        default=None,
+    )
+    cloned.add_argument(
+        "--smtp-host",
+        help="SMTP server host (default: %(default)s)",
+        default="smtp.gmail.com",
+    )
+    cloned.add_argument(
+        "--smtp-port",
+        help="SMTP server port (default: %(default)s)",
+        type=int,
+        default=587,
+    )
+    cloned.add_argument(
+        "--smtp-no-tls",
+        help="Disable TLS for SMTP",
+        action="store_true",
+        default=False,
+    )
+    cloned.add_argument(
+        "--notification-email",
+        help="Email address for notifications (default: SMTP username)",
+        default=None,
+    )
+    cloned.add_argument(
+        "--notification-email-from",
+        help="From address for notification emails",
+        default=None,
+    )
+    cloned.add_argument(
+        "--notification-script",
+        help="Script to run when authentication requires user interaction",
+        default=None,
+    )
     return cloned
 
 
@@ -164,6 +219,118 @@ def _add_username(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return cloned
 
 
+_GLOBAL_DEFAULTS = {
+    "log_level": "debug",
+    "domain": "com",
+    "password_providers": None,
+    "mfa_provider": "console",
+    "watch": False,
+    "daily_hour": 2,
+    "weekly_day": 0,
+    "jitter_hours": 3.0,
+    "daily_lookback_days": 2,
+    "smtp_username": None,
+    "smtp_password": None,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_no_tls": False,
+    "notification_email": None,
+    "notification_email_from": None,
+    "notification_script": None,
+}
+
+
+def _apply_cli_overrides(
+    yaml_config: SyncGlobalConfig, cli_ns: argparse.Namespace,
+) -> SyncGlobalConfig:
+    """Override YAML global config with explicitly provided CLI args.
+
+    A CLI arg is considered explicit when its value differs from the argparse default.
+    """
+    log_level = yaml_config.log_level
+    if cli_ns.log_level != _GLOBAL_DEFAULTS["log_level"]:
+        log_level = _log_level(cli_ns.log_level)
+
+    domain = yaml_config.domain
+    if cli_ns.domain != _GLOBAL_DEFAULTS["domain"]:
+        domain = cli_ns.domain
+
+    password_providers = yaml_config.password_providers
+    if cli_ns.password_providers is not None:
+        password_providers = list(
+            map_(
+                PasswordProvider,
+                foundation.unique_sequence(cli_ns.password_providers),
+            )
+        )
+
+    mfa_provider = yaml_config.mfa_provider
+    if cli_ns.mfa_provider != _GLOBAL_DEFAULTS["mfa_provider"]:
+        mfa_provider = MFAProvider(cli_ns.mfa_provider)
+
+    schedule = yaml_config.schedule
+    if cli_ns.watch and schedule is None:
+        schedule = ScheduleConfig()
+    if schedule is not None:
+        schedule = ScheduleConfig(
+            daily_preferred_hour=(
+                cli_ns.daily_hour
+                if cli_ns.daily_hour != _GLOBAL_DEFAULTS["daily_hour"]
+                else schedule.daily_preferred_hour
+            ),
+            weekly_preferred_day=(
+                cli_ns.weekly_day
+                if cli_ns.weekly_day != _GLOBAL_DEFAULTS["weekly_day"]
+                else schedule.weekly_preferred_day
+            ),
+            jitter_max_hours=(
+                cli_ns.jitter_hours
+                if cli_ns.jitter_hours != _GLOBAL_DEFAULTS["jitter_hours"]
+                else schedule.jitter_max_hours
+            ),
+            daily_lookback_days=(
+                cli_ns.daily_lookback_days
+                if cli_ns.daily_lookback_days != _GLOBAL_DEFAULTS["daily_lookback_days"]
+                else schedule.daily_lookback_days
+            ),
+        )
+
+    notification = yaml_config.notification
+    if _has_cli_notification(cli_ns):
+        notification = _notification_from_ns(cli_ns)
+
+    return SyncGlobalConfig(
+        log_level=log_level,
+        domain=domain,
+        password_providers=password_providers,
+        mfa_provider=mfa_provider,
+        schedule=schedule,
+        notification=notification,
+    )
+
+
+def _has_cli_notification(ns: argparse.Namespace) -> bool:
+    return (
+        ns.smtp_username is not None
+        or ns.notification_email is not None
+        or ns.notification_script is not None
+    )
+
+
+def _notification_from_ns(ns: argparse.Namespace) -> NotificationConfig:
+    script = ns.notification_script
+    return NotificationConfig(
+        smtp_username=ns.smtp_username,
+        smtp_password=ns.smtp_password,
+        smtp_host=ns.smtp_host,
+        smtp_port=ns.smtp_port,
+        smtp_no_tls=ns.smtp_no_tls,
+        notification_email=ns.notification_email,
+        notification_email_from=ns.notification_email_from,
+        notification_script=pathlib.Path(script) if script else None,
+    )
+
+
 def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfig]]:
     if len(args) == 0:
         args = ["--help"]
@@ -174,6 +341,14 @@ def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfi
     global_ns, non_global_args = global_parser.parse_known_args(args)
 
     splitted_args = foundation.split_with_alternatives(["-u", "--username"], non_global_args)
+    has_cli_users = len(splitted_args) > 1
+
+    if global_ns.config and not has_cli_users:
+        raw = read_config_file(Path(global_ns.config))
+        yaml_global, yaml_users = load_config(raw)
+        global_config = _apply_cli_overrides(yaml_global, global_ns)
+        return global_config, yaml_users
+
     default_args = splitted_args[0]
 
     default_parser = _add_user_options(
@@ -214,6 +389,8 @@ def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfi
         else None
     )
 
+    notification_config = _notification_from_ns(global_ns) if _has_cli_notification(global_ns) else None
+
     global_config = SyncGlobalConfig(
         log_level=_log_level(global_ns.log_level),
         domain=global_ns.domain,
@@ -227,6 +404,7 @@ def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfi
         ),
         mfa_provider=MFAProvider(global_ns.mfa_provider),
         schedule=schedule_config,
+        notification=notification_config,
     )
 
     return global_config, user_configs

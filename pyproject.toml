@@ -39,6 +39,7 @@ dependencies = [
     "keyrings-alt==5.0.2",
     "srp==1.0.22",
     "schedule==1.2.2",
+    "PyYAML==6.0.2",
 ]
 
 [dependency-groups]

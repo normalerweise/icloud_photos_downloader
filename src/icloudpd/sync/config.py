@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import pathlib
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -31,9 +32,22 @@ class ScheduleConfig:
 
 
 @dataclass(kw_only=True)
+class NotificationConfig:
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_no_tls: bool = False
+    notification_email: str | None = None
+    notification_email_from: str | None = None
+    notification_script: pathlib.Path | None = None
+
+
+@dataclass(kw_only=True)
 class SyncGlobalConfig:
     log_level: LogLevel
     domain: str
     password_providers: Sequence[PasswordProvider]
     mfa_provider: MFAProvider
     schedule: ScheduleConfig | None = None
+    notification: NotificationConfig | None = None

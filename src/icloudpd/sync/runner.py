@@ -19,6 +19,7 @@ from icloudpd.base import (
     dummy_password_writter,
     get_password_from_webui,
     keyring_password_writter,
+    notificator_builder,
     update_password_status_in_webui,
 )
 from icloudpd.log_handler import WebUILogHandler
@@ -27,7 +28,12 @@ from icloudpd.mfa_provider import MFAProvider
 from icloudpd.password_provider import PasswordProvider
 from icloudpd.server import serve_app
 from icloudpd.status import StatusExchange
-from icloudpd.sync.config import ScheduleConfig, SyncGlobalConfig, SyncUserConfig
+from icloudpd.sync.config import (
+    NotificationConfig,
+    ScheduleConfig,
+    SyncGlobalConfig,
+    SyncUserConfig,
+)
 from icloudpd.sync.database import PhotoDatabase
 from icloudpd.sync.download_manager import DownloadManager
 from icloudpd.sync.file_manager import FileManager
@@ -102,6 +108,28 @@ def build_password_providers(
     return result
 
 
+def build_notificator(
+    logger: logging.Logger,
+    username: str,
+    notification: NotificationConfig | None,
+) -> Callable[[], None]:
+    if notification is None:
+        return lambda: None
+    return partial(
+        notificator_builder,
+        logger,
+        username,
+        notification.smtp_username,
+        notification.smtp_password,
+        notification.smtp_host,
+        notification.smtp_port,
+        notification.smtp_no_tls,
+        notification.notification_email,
+        notification.notification_email_from,
+        str(notification.notification_script) if notification.notification_script else None,
+    )
+
+
 def _needs_web_server(global_config: SyncGlobalConfig) -> bool:
     return (
         global_config.mfa_provider == MFAProvider.WEBUI
@@ -155,6 +183,8 @@ def _sync_single_user(
         status_exchange,
     )
 
+    notificator = build_notificator(logger, user_config.username, global_config.notification)
+
     try:
         icloud = authenticator(
             logger,
@@ -163,7 +193,7 @@ def _sync_single_user(
             global_config.mfa_provider,
             status_exchange,
             user_config.username,
-            lambda: None,
+            notificator,
             lambda _response: None,
             user_config.cookie_directory,
             os.environ.get("CLIENT_ID"),
