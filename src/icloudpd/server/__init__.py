@@ -6,6 +6,7 @@ import waitress
 from flask import Flask, Response, make_response, render_template, request
 
 from icloudpd.status import Status, StatusExchange
+from icloudpd.sync.schedule import SyncRunKind
 
 
 def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
@@ -32,6 +33,7 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
 
         if _status == Status.NO_INPUT_NEEDED:
             _log_entries = _status_exchange.get_log_buffer().get_all()
+            _schedule_info = _status_exchange.get_schedule_info()
             return render_template(
                 "no_input.html",
                 status=_status,
@@ -41,6 +43,7 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
                 user_configs=[vars(uc) for uc in _user_configs] if _user_configs else [],
                 current_user=_current_user,
                 log_entries=_log_entries,
+                schedule_info=_schedule_info,
             )
         if _status == Status.NEED_MFA:
             _trusted_devices = _status_exchange.get_trusted_devices()
@@ -109,6 +112,17 @@ def serve_app(logger: Logger, _status_exchange: StatusExchange) -> None:
             ),
             400,
         )
+
+    @app.route("/trigger-sync", methods=["POST"])
+    def trigger_sync() -> Response | str:
+        username = request.form.get("username")
+        kind_str = request.form.get("kind")
+        if username is None or kind_str not in ("daily", "weekly"):
+            return make_response("Bad request: username and kind (daily/weekly) required", 400)
+        kind = SyncRunKind.DAILY if kind_str == "daily" else SyncRunKind.WEEKLY
+        _status_exchange.trigger_sync(username, kind)
+        _status_exchange.get_progress().resume = True
+        return make_response("Ok", 200)
 
     @app.route("/resume", methods=["POST"])
     def resume() -> Response | str:

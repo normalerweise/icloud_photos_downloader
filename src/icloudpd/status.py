@@ -4,6 +4,7 @@ from typing import Any, Sequence
 
 from icloudpd.log_buffer import LogBuffer
 from icloudpd.progress import Progress
+from icloudpd.sync.schedule import SyncRunKind, UserScheduleInfo
 
 
 class Status(Enum):
@@ -41,6 +42,8 @@ class StatusExchange:
         self._trusted_devices: Sequence[TrustedDeviceInfo] = []
         self._sms_request_device_id: int | None = None
         self._sms_sent_device_id: int | None = None
+        self._schedule_info: Sequence[UserScheduleInfo] = []
+        self._manual_triggers: list[tuple[str, SyncRunKind]] = []
 
     def get_status(self) -> Status:
         with self.lock:
@@ -168,6 +171,24 @@ class StatusExchange:
     def get_sms_sent_device_id(self) -> int | None:
         with self.lock:
             return self._sms_sent_device_id
+
+    def set_schedule_info(self, info: Sequence[UserScheduleInfo]) -> None:
+        with self.lock:
+            self._schedule_info = info
+
+    def get_schedule_info(self) -> Sequence[UserScheduleInfo]:
+        with self.lock:
+            return self._schedule_info
+
+    def trigger_sync(self, username: str, kind: SyncRunKind) -> None:
+        with self.lock:
+            self._manual_triggers.append((username, kind))
+
+    def drain_manual_triggers(self) -> list[tuple[str, SyncRunKind]]:
+        with self.lock:
+            triggers = self._manual_triggers.copy()
+            self._manual_triggers.clear()
+            return triggers
 
     def clear_mfa_state(self) -> None:
         """Reset MFA-related state between auth attempts."""

@@ -128,24 +128,28 @@ class TestStatusExchangeGenericConfig:
 
 
 class TestSyncGlobalConfigWatchMode:
-    def test_watch_with_interval_default_none(self) -> None:
+    def test_schedule_default_none(self) -> None:
         config = SyncGlobalConfig(
             log_level="debug",
             domain="com",
             password_providers=[PasswordProvider.CONSOLE],
             mfa_provider=MFAProvider.CONSOLE,
         )
-        assert config.watch_with_interval is None
+        assert config.schedule is None
 
-    def test_watch_with_interval_set(self) -> None:
+    def test_schedule_set(self) -> None:
+        from icloudpd.sync.config import ScheduleConfig
+
         config = SyncGlobalConfig(
             log_level="debug",
             domain="com",
             password_providers=[PasswordProvider.CONSOLE],
             mfa_provider=MFAProvider.CONSOLE,
-            watch_with_interval=3600,
+            schedule=ScheduleConfig(daily_preferred_hour=14, weekly_preferred_day=3),
         )
-        assert config.watch_with_interval == 3600
+        assert config.schedule is not None
+        assert config.schedule.daily_preferred_hour == 14
+        assert config.schedule.weekly_preferred_day == 3
 
 
 class TestStatusExchangeSMS:

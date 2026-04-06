@@ -17,7 +17,7 @@ from icloudpd.log_level import LogLevel
 from icloudpd.mfa_provider import MFAProvider
 from icloudpd.password_provider import PasswordProvider
 from icloudpd.string_helpers import parse_timestamp_or_timedelta
-from icloudpd.sync.config import SyncGlobalConfig, SyncUserConfig
+from icloudpd.sync.config import ScheduleConfig, SyncGlobalConfig, SyncUserConfig
 
 
 def _ensure_tzinfo(tz: datetime.tzinfo, dt: datetime.datetime) -> datetime.datetime:
@@ -84,10 +84,34 @@ def _add_global_options(parser: argparse.ArgumentParser) -> argparse.ArgumentPar
         type=lower,
     )
     cloned.add_argument(
-        "--watch-with-interval",
-        help="Run in watch mode, syncing every N seconds (default: run once)",
+        "--watch",
+        help="Enable scheduled watch mode (daily + weekly sync runs)",
+        action="store_true",
+        default=False,
+    )
+    cloned.add_argument(
+        "--daily-hour",
+        help="Preferred hour (0-23) for daily runs (default: %(default)s)",
         type=int,
-        default=None,
+        default=2,
+    )
+    cloned.add_argument(
+        "--weekly-day",
+        help="Preferred weekday (0=Mon..6=Sun) for weekly full sync (default: %(default)s)",
+        type=int,
+        default=0,
+    )
+    cloned.add_argument(
+        "--jitter-hours",
+        help="Max random jitter in hours to spread API load (default: %(default)s)",
+        type=float,
+        default=3.0,
+    )
+    cloned.add_argument(
+        "--daily-lookback-days",
+        help="Days to look back for daily runs (default: %(default)s)",
+        type=int,
+        default=2,
     )
     return cloned
 
@@ -179,6 +203,17 @@ def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfi
         )
     ]
 
+    schedule_config = (
+        ScheduleConfig(
+            daily_preferred_hour=global_ns.daily_hour,
+            weekly_preferred_day=global_ns.weekly_day,
+            jitter_max_hours=global_ns.jitter_hours,
+            daily_lookback_days=global_ns.daily_lookback_days,
+        )
+        if global_ns.watch
+        else None
+    )
+
     global_config = SyncGlobalConfig(
         log_level=_log_level(global_ns.log_level),
         domain=global_ns.domain,
@@ -191,7 +226,7 @@ def parse(args: Sequence[str]) -> Tuple[SyncGlobalConfig, Sequence[SyncUserConfi
             )
         ),
         mfa_provider=MFAProvider(global_ns.mfa_provider),
-        watch_with_interval=global_ns.watch_with_interval,
+        schedule=schedule_config,
     )
 
     return global_config, user_configs

@@ -23,9 +23,17 @@ class SyncUserConfig:
 
 
 @dataclass(kw_only=True)
+class ScheduleConfig:
+    daily_preferred_hour: int = 2
+    weekly_preferred_day: int = 0  # 0=Monday, 6=Sunday
+    jitter_max_hours: float = 3.0
+    daily_lookback_days: int = 2
+
+
+@dataclass(kw_only=True)
 class SyncGlobalConfig:
     log_level: LogLevel
     domain: str
     password_providers: Sequence[PasswordProvider]
     mfa_provider: MFAProvider
-    watch_with_interval: int | None = None
+    schedule: ScheduleConfig | None = None

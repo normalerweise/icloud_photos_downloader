@@ -47,7 +47,7 @@
                         {% if progress._waiting != 0 %}
                             <li class="list-group-item">
                                 <div class="d-flex justify-content-between align-items-start mb-2">
-                                    <div class="fw-bold">Waiting for next iteration</div>
+                                    <div class="fw-bold">{% if schedule_info %}Waiting for next scheduled run{% else %}Waiting for next iteration{% endif %}</div>
                                     <span>{{ progress.waiting_readable }}</span>
                                 </div>
                                 <button hx-post="/resume" class="btn btn-primary mb-2">Resume</button>
@@ -57,6 +57,57 @@
                 </div>
             </div>
         </div>
+        {% if schedule_info %}
+        <div class="row mb-3">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header text-bg-warning">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span>Sync Schedule</span>
+                            <span class="badge bg-dark">{{ schedule_info|length }} users</span>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Weekly Run</th>
+                                    <th>Daily Run</th>
+                                    <th>Next Run</th>
+                                    <th>Run Now</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            {% for info in schedule_info %}
+                                <tr>
+                                    <td>
+                                        {{ info.username }}
+                                        {% if info.username == current_user %}
+                                            <span class="badge bg-success ms-1">Active</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ info.weekly_day }} {{ info.weekly_time }}</td>
+                                    <td>{{ info.daily_time }}</td>
+                                    <td>
+                                        <span class="badge {% if info.next_run_kind == 'weekly' %}bg-primary{% else %}bg-secondary{% endif %}">{{ info.next_run_kind }}</span>
+                                        <span class="text-muted ms-1">{{ info.next_run_at }}</span>
+                                    </td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm">
+                                            <button hx-post="/trigger-sync" hx-vals='{"username": "{{ info.username }}", "kind": "daily"}' class="btn btn-outline-secondary btn-sm">Delta</button>
+                                            <button hx-post="/trigger-sync" hx-vals='{"username": "{{ info.username }}", "kind": "weekly"}' class="btn btn-outline-primary btn-sm">Full</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         {% if log_entries %}
         <div class="row mb-3">
             <div class="col-12">
